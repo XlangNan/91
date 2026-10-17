@@ -4,7 +4,8 @@
 set -Eeuo pipefail
 
 SERVICE="video-site-91"
-DEFAULT_IMAGE="ghcr.io/nianzhibai/91:stable"
+IMAGE_REPOSITORY="ghcr.io/nianzhibai/91"
+DEFAULT_IMAGE="$IMAGE_REPOSITORY:stable"
 TEMPLATE_DIR="/usr/local/share/video-site-91/deploy"
 # Individual files can reference services/resources supplied by overlays. The
 # complete candidate is checked for consistency after the files are combined.
@@ -12,10 +13,8 @@ RAW_OPTIONS=(--no-interpolate --no-path-resolution --no-normalize --no-env-resol
 COMPOSE_FILES=()
 PROJECT_OPTIONS=()
 READY_GPU=()
-ACTION="auto"
-RESET_ARGS=()
-DEPLOYMENT_OPTIONS=()
-GPU_MODE="auto"
+ACTION=""
+SELECTED_GPU="keep"
 TELEGRAM_MODE="keep"
 TELEGRAM_SERVICE="telegram-bot-api"
 OLD_TELEGRAM_IMAGE=""
@@ -23,10 +22,9 @@ TELEGRAM_WAS_RUNNING=false
 TELEGRAM_ADDED=false
 FORCE_RECREATE=false
 RESTORING_DEPLOYMENT=false
-PROJECT_NAME=""
 REQUESTED_IMAGE=""
-INSTALL_PORT=""
-INSTALL_DATA_DIR=""
+TARGET_IMAGE=""
+TARGET_IMAGE_ID=""
 WAIT_TIMEOUT=90
 WORK_DIR=""
 TARGET=""
@@ -80,19 +78,6 @@ def merge_deployment($template; $local):
        if ($existing.services[$service] | has($key)) then .
        else del(.services[$service][$key]) end)
   else error("Both deployment files must contain service " + $service) end;
-
-def installation_settings($port; $directory):
-  (if $port != "" then
-     if any(.services[$service].ports[]; .target == 9191) then
-       .services[$service].ports |= map(if .target == 9191 then .published = $port else . end)
-     else error("The deployment template has no port mapping for 9191") end
-   else . end) |
-  if $directory != "" then
-    if any(.services[$service].volumes[]; .target == "/opt/video-site-91/data" and .type == "bind") then
-      .services[$service].volumes |= map(
-        if .target == "/opt/video-site-91/data" then .source = $directory else . end)
-    else error("The deployment template has no application data bind mount") end
-  else . end;
 
 def configure_telegram($template; $effective; $credentials; $compose):
   "telegram-bot-api" as $bot |
@@ -213,7 +198,7 @@ def configure_gpu($mode; $template):
         .environment |= environment_map |
         (.environment.NVIDIA_DRIVER_CAPABILITIES // "") as $capabilities |
         if ($capabilities | contains("$")) then
-          error("NVIDIA_DRIVER_CAPABILITIES uses interpolation; include compute,video,utility there and use --gpu keep")
+          error("NVIDIA_DRIVER_CAPABILITIES uses interpolation; include compute,video,utility there before configuring NVIDIA access")
         else
           ($capabilities | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $values |
           if ($values | index("all")) != null then .
@@ -276,87 +261,79 @@ json() {
 }
 
 usage() {
-  cat <<'EOF'
-Usage: bash 91-docker.sh [install|update|reset-password] [options]
+  local action="${1:-}"
+  case "$action" in
+    install|update)
+      printf 'Usage: bash 91-docker.sh %s [--image IMAGE]\n\n' "$action"
+      if [[ "$action" == install ]]; then
+        printf 'Install a new deployment; refuse to overwrite existing configuration.\n\n'
+      else
+        printf 'Update 91 image and deployment templates; preserve existing settings.\n\n'
+      fi
+      printf '      --image IMAGE  Image or tag (install: stable; update: reuse the configured image tag; main: development)\n'
+      ;;
+    gpu)
+      cat <<'EOF'
+Usage: bash 91-docker.sh gpu
 
-Install or update a Compose deployment and prepare container GPU access.
-Without an action, install if no Compose file exists; otherwise update it.
-The application's GPU switch is never changed.
-
-  install                 First deployment; refuse to overwrite existing config
-  update                  Update an existing deployment; require existing config
-  reset-password          Reset an existing user's password in the running website
-  -f, --file FILE          Compose files in order; create/update the first
-  -p, --project-name NAME  Existing project name, if originally started with -p
-      --image IMAGE       Target image (new: stable; existing: current reference)
-      --port PORT         First deployment only: host port (default: 9191)
-      --data-dir PATH     First deployment only: data directory (default: ./data)
-      --gpu MODE          auto (default), keep, cpu, nvidia, or vaapi
-      --telegram MODE     keep (default) or enable; deploy the local Bot API
-      --wait-timeout N    Container startup timeout in seconds (default: 90)
-  -h, --help              Show this help
-
-Password reset options:
-      --user-id ID        Existing user ID (omit to select interactively)
-      --config PATH       Server configuration path inside the container
-The website must already be running. Reset uses the existing server's random
-password generator and does not require jq or deployment dependency installation.
-
-Install/update requirements: Bash, Docker Compose and standard Linux utilities, including
-flock and timeout. Missing jq is installed with apt-get, dnf, yum, apk, zypper or
-pacman, using root privileges or sudo. Run from the deployment directory.
-Enabling Telegram prompts for missing API ID and API Hash with visible input.
-TELEGRAM_API_ID / TELEGRAM_API_HASH may also be supplied through the environment.
-Configure the Bot Token and receiving switch in the website administration panel.
+Detect the current host GPU and configure Compose for container GPU access.
+Use VAAPI when available, otherwise NVIDIA, or CPU if no usable GPU is found.
 EOF
+      ;;
+    telegram)
+      cat <<'EOF'
+Usage: bash 91-docker.sh telegram
+
+Deploy the local Telegram Bot API without updating the 91 image.
+EOF
+      ;;
+    reset-password)
+      cat <<'EOF'
+Usage: bash 91-docker.sh reset-password
+
+Reset an existing user's password interactively (requires 91 to be running).
+EOF
+      ;;
+    *)
+      cat <<'EOF'
+Usage: bash 91-docker.sh COMMAND [options]
+
+Manage 91 Docker.
+
+  install [--image IMAGE]  Install 91 (default: stable tage)
+  update [--image IMAGE]   Update 91 (default: reuse the configured image tag)
+  reset-password          Reset an existing user's password interactively (requires 91 to be running)
+  gpu                     Detect the current host GPU and configure Compose
+  telegram                Deploy the local Telegram Bot API
+EOF
+      ;;
+  esac
+  printf '\n  -h, --help              Show help for this command\n'
 }
 
 parse_args() {
+  if (( $# == 0 )); then usage; exit 0; fi
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    install|update|reset-password|gpu|telegram) ACTION="$1"; shift ;;
+    *) die "Unknown command: $1 (see --help)" ;;
+  esac
+  if [[ "$ACTION" == telegram ]]; then TELEGRAM_MODE=enable; fi
   while (( $# )); do
     case "$1" in
-      -h|--help) usage; exit 0 ;;
-      install|update|reset-password)
-        [[ "$ACTION" == auto ]] || die "Specify only one action: install, update or reset-password"
-        ACTION="$1"
-        shift
-        ;;
-      --user-id|--config)
-        if (( $# < 2 )) || [[ -z "${2:-}" ]]; then die "Missing value for $1"; fi
-        RESET_ARGS+=("$1" "$2")
+      -h|--help) usage "$ACTION"; exit 0 ;;
+      --image)
+        [[ "$ACTION" == install || "$ACTION" == update ]] || die "--image is only supported by install and update"
+        if (( $# < 2 )) || [[ -z "${2:-}" || "${2:-}" == -* ]]; then die "Missing value for $1"; fi
+        REQUESTED_IMAGE="$2"
         shift 2
         ;;
-      --user-id=*|--config=*) RESET_ARGS+=("$1"); shift ;;
-      -f|--file|-p|--project-name|--image|--gpu|--telegram|--wait-timeout|--port|--data-dir)
-        if (( $# < 2 )) || [[ -z "${2:-}" ]]; then die "Missing value for $1"; fi
-        case "$1" in
-          -f|--file) COMPOSE_FILES+=("$2") ;;
-          -p|--project-name) PROJECT_NAME="$2" ;;
-          --image) REQUESTED_IMAGE="$2" ;;
-          --port) INSTALL_PORT="$2" ;;
-          --data-dir) INSTALL_DATA_DIR="$2" ;;
-          --gpu) GPU_MODE="$2" ;;
-          --telegram) TELEGRAM_MODE="$2" ;;
-          --wait-timeout) WAIT_TIMEOUT="$2" ;;
-        esac
-        case "$1" in -f|--file|-p|--project-name) ;; *) DEPLOYMENT_OPTIONS+=("$1") ;; esac
-        shift 2
-        ;;
-      *) die "Unknown option: $1 (see --help)" ;;
+      *) die "Unknown argument for $ACTION: $1 (see $ACTION --help)" ;;
     esac
   done
-  if [[ "$ACTION" == reset-password ]]; then
-    (( ${#DEPLOYMENT_OPTIONS[@]} == 0 )) || die "Deployment options cannot be combined with reset-password"
-  elif (( ${#RESET_ARGS[@]} )); then
-    die "--user-id and --config require the reset-password action"
-  fi
-  case "$GPU_MODE" in auto|keep|cpu|nvidia|vaapi) ;; *) die "Unknown GPU mode: $GPU_MODE" ;; esac
-  case "$TELEGRAM_MODE" in keep|enable) ;; *) die "Unknown Telegram mode: $TELEGRAM_MODE" ;; esac
-  [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--wait-timeout must be positive"
-  if [[ -n "$INSTALL_PORT" ]]; then
-    [[ "$INSTALL_PORT" =~ ^[0-9]{1,5}$ ]] || die "--port must be between 1 and 65535"
-    (( 10#$INSTALL_PORT >= 1 && 10#$INSTALL_PORT <= 65535 )) || die "--port must be between 1 and 65535"
-    INSTALL_PORT="$((10#$INSTALL_PORT))"
-  fi
+  case "$REQUESTED_IMAGE" in
+    main|stable) REQUESTED_IMAGE="$IMAGE_REPOSITORY:$REQUESTED_IMAGE" ;;
+  esac
 }
 
 compose_with() {
@@ -375,17 +352,23 @@ reset_password() {
   local -a options=()
   # Compose allocates a TTY by default. Preserve piped input and automation too.
   if [[ ! -t 0 || ! -t 1 ]]; then options+=(-T); fi
-  compose exec "${options[@]}" "$SERVICE" /opt/video-site-91/server reset-password "$@"
+  compose exec "${options[@]}" "$SERVICE" /opt/video-site-91/server reset-password
 }
 
 raw_json() { compose_with "$@" -- config --format json "${RAW_OPTIONS[@]}"; }
 start_with() {
-  local -a options=()
+  local -a options=() services=("$SERVICE")
+  if [[ "$ACTION" == gpu || "$ACTION" == telegram ]]; then
+    options+=(--no-deps)
+    if [[ "$TELEGRAM_MODE" == enable && "$RESTORING_DEPLOYMENT" != true ]]; then
+      services=("$TELEGRAM_SERVICE" "$SERVICE")
+    fi
+  fi
   if [[ "$TELEGRAM_MODE" == enable || "$FORCE_RECREATE" == true ]]; then options+=(--force-recreate); fi
   if [[ "$RESTORING_DEPLOYMENT" == true && "$TELEGRAM_MODE" == enable && "$TELEGRAM_WAS_RUNNING" != true ]]; then
     options+=(--no-deps)
   fi
-  compose_with "$@" -- up -d --no-build --pull never --wait --wait-timeout "$WAIT_TIMEOUT" "${options[@]}" "$SERVICE"
+  compose_with "$@" -- up -d --no-build --pull never --wait --wait-timeout "$WAIT_TIMEOUT" "${options[@]}" "${services[@]}"
 }
 
 telegram_parameter() {
@@ -402,8 +385,8 @@ telegram_credentials() {
   local api_id api_hash
   api_id=$(json -r '.services["telegram-bot-api"].environment.TELEGRAM_API_ID // ""' < "$1")
   api_hash=$(json -r '.services["telegram-bot-api"].environment.TELEGRAM_API_HASH // ""' < "$1")
-  api_id=$(telegram_parameter TELEGRAM_API_ID '^[1-9][0-9]*$' "${TELEGRAM_API_ID:-$api_id}" 'positive integer from my.telegram.org')
-  api_hash=$(telegram_parameter TELEGRAM_API_HASH '^[a-fA-F0-9]{32}$' "${TELEGRAM_API_HASH:-$api_hash}" '32 hexadecimal characters from my.telegram.org')
+  api_id=$(telegram_parameter TELEGRAM_API_ID '^[1-9][0-9]*$' "${TELEGRAM_API_ID:-$api_id}" 'from my.telegram.org')
+  api_hash=$(telegram_parameter TELEGRAM_API_HASH '^[a-fA-F0-9]{32}$' "${TELEGRAM_API_HASH:-$api_hash}" 'from my.telegram.org')
   # Keep credentials off command arguments. Both terminal inputs remain visible.
   printf '%s\000%s' "$api_id" "$api_hash" | json -Rs '
     split("\u0000") | {api_id: .[0], api_hash: .[1]}
@@ -411,6 +394,7 @@ telegram_credentials() {
 }
 
 prepare_telegram() {
+  load_deployment_templates
   local -a files=("$WORK_DIR/proposed.json" "${COMPOSE_FILES[@]:1}")
   if ! docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/tg-docker-compose.yml" "$WORK_DIR/tg-docker-compose.yml"; then
     die "The image has no Telegram deployment template; publish an image with the updated Dockerfile first"
@@ -502,16 +486,10 @@ deployment_files() {
   COMPOSE_FILES=("${absolute[@]}")
   TARGET="${COMPOSE_FILES[0]}"
   PROJECT_OPTIONS=(--project-directory "$(dirname -- "$TARGET")")
-  if [[ -n "$PROJECT_NAME" ]]; then PROJECT_OPTIONS+=(--project-name "$PROJECT_NAME"); fi
   if [[ -f "$TARGET" ]]; then
     [[ "$ACTION" != install ]] || die "Compose configuration already exists; use update to preserve its settings"
-    if [[ "$ACTION" == auto ]]; then ACTION=update; fi
-    [[ -z "$INSTALL_PORT" && -z "$INSTALL_DATA_DIR" ]] || die "--port and --data-dir are for first deployment only; edit the existing Compose configuration to change them"
   else
-    case "$ACTION" in
-      update|reset-password) die "No Compose deployment found; $ACTION requires an existing Compose configuration" ;;
-    esac
-    ACTION=install
+    [[ "$ACTION" == install ]] || die "No Compose deployment found; $ACTION requires an existing Compose configuration; use install for first deployment"
   fi
 }
 
@@ -547,7 +525,7 @@ detect_host_gpu() {
   fi
   operating_system=$(json -r '.OperatingSystem // "" | ascii_downcase' < "$info")
   [[ "$(uname -s)" == Linux && "$endpoint" == unix://* && "$operating_system" != *"docker desktop"* ]] ||
-    die "Automatic GPU detection requires a local Linux Docker Engine; use --gpu keep for other Docker hosts"
+    die "GPU detection requires a local Linux Docker Engine; configure GPU access in Compose for other Docker hosts"
   rootless=$(json -r 'any((.SecurityOptions // [])[]; contains("rootless"))' < "$info")
   while IFS= read -r device; do
     [[ -n "$device" ]] || continue
@@ -578,33 +556,12 @@ detect_host_gpu() {
   fi
 }
 
-choose_gpu() {
-  local existing mode
-  existing=$(json -r '.services[$service] | gpu_modes | join(" ")' < "$WORK_DIR/effective.json")
-  SELECTED_GPU="$GPU_MODE"
-  case "$GPU_MODE" in
-    keep|cpu) return ;;
-    auto)
-      if [[ -n "$existing" ]]; then
-        for mode in $existing; do
-          gpu_ready "$mode" || die "Existing GPU prerequisites are not ready; fix them or use --gpu cpu/keep"
-        done
-        SELECTED_GPU=keep
-      elif gpu_ready vaapi; then SELECTED_GPU=vaapi
-      elif gpu_ready nvidia; then SELECTED_GPU=nvidia
-      else SELECTED_GPU=cpu
-      fi
-      ;;
-    *) gpu_ready "$GPU_MODE" || die "$GPU_MODE prerequisites are not ready; the deployment has not been changed" ;;
-  esac
-}
-
 restore_deployment() {
   if [[ "$ACTION" == install ]]; then
     log "Installation failed; generated Compose configuration and application data have been kept. Fix the issue and run the script again"
     return
   fi
-  log "Update failed; restoring the original Compose configuration"
+  log "Deployment failed; restoring the original Compose configuration"
   RESTORING_DEPLOYMENT=true
   if [[ "$TELEGRAM_MODE" == enable ]]; then
     if [[ "$TELEGRAM_ADDED" == true ]]; then
@@ -652,26 +609,27 @@ finish() {
   exit "$status"
 }
 
-apply_deployment() {
-  local target_image old_reference container_ids container image_id previous_id="" mode
+load_deployment_templates() {
+  [[ -z "$TEMPLATE_CONTAINER" ]] || return 0
+  TEMPLATE_CONTAINER=$(docker create --pull never --entrypoint /bin/true "$TARGET_IMAGE_ID")
+  if ! docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/docker-compose.yml" "$WORK_DIR/docker-compose.yml"; then
+    die "The image has no deployment templates; publish an image built with the updated Dockerfile first"
+  fi
+  raw_json "$WORK_DIR/docker-compose.yml" > "$WORK_DIR/template.json"
+}
+
+prepare_deployment() {
+  local old_reference container_ids container previous_id=""
   local -a candidate_files
-  target_image="$REQUESTED_IMAGE"
-  if [[ "$ACTION" == update ]]; then
+  TARGET_IMAGE="$REQUESTED_IMAGE"
+  if [[ "$ACTION" != install ]]; then
     cp -p -- "$TARGET" "$WORK_DIR/original.yml"
     raw_json "$TARGET" > "$WORK_DIR/local.json"
     compose config --format json > "$WORK_DIR/effective.json"
     json -e '.services | has($service)' < "$WORK_DIR/effective.json" >/dev/null || die "Deployment must contain service $SERVICE"
     old_reference=$(json -r '.services[$service].image // ""' < "$WORK_DIR/effective.json")
-    if [[ -z "$target_image" ]]; then target_image="$old_reference"; fi
-  elif [[ -z "$target_image" ]]; then
-    target_image="$DEFAULT_IMAGE"
-  fi
-  [[ -n "$target_image" && "$target_image" != -* ]] || die "The service must specify an image, or pass --image"
-  docker info --format '{{json .}}' > "$WORK_DIR/docker-info.json"
-  case "$GPU_MODE" in keep|cpu) ;; *) detect_host_gpu "$WORK_DIR/docker-info.json" ;; esac
-  if [[ "$ACTION" == update ]]; then
-    choose_gpu
-    # Capture the running image ID before updating a mutable tag such as stable.
+    if [[ -z "$TARGET_IMAGE" ]]; then TARGET_IMAGE="$old_reference"; fi
+    # Preserve the actual container image even if its local tag has moved.
     container_ids=$(compose ps -a -q "$SERVICE")
     while IFS= read -r container; do
       [[ -n "$container" ]] || continue
@@ -682,62 +640,93 @@ apply_deployment() {
     if [[ -z "$OLD_IMAGE" && -n "$old_reference" ]]; then
       if previous_id=$(docker image inspect --format '{{.Id}}' "$old_reference" 2>/dev/null); then OLD_IMAGE="$previous_id"; fi
     fi
+  elif [[ -z "$TARGET_IMAGE" ]]; then
+    TARGET_IMAGE="$DEFAULT_IMAGE"
   fi
-  log "Pulling $target_image"
-  docker pull "$target_image"
-  image_id=$(docker image inspect --format '{{.Id}}' "$target_image")
-  TEMPLATE_CONTAINER=$(docker create --entrypoint /bin/true "$image_id")
-  if ! docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/docker-compose.yml" "$WORK_DIR/docker-compose.yml"; then
-    die "The image has no deployment templates; publish an image built with the updated Dockerfile first"
+  [[ -n "$TARGET_IMAGE" && "$TARGET_IMAGE" != -* ]] || die "The deployment must specify a 91 image"
+  if [[ "$ACTION" == install || "$ACTION" == update ]]; then
+    log "Pulling $TARGET_IMAGE"
+    docker pull "$TARGET_IMAGE"
+    TARGET_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$TARGET_IMAGE")
+  else
+    [[ -n "$OLD_IMAGE" ]] || die "No local 91 image is available; run install or update explicitly"
+    TARGET_IMAGE_ID="$OLD_IMAGE"
   fi
-  raw_json "$WORK_DIR/docker-compose.yml" > "$WORK_DIR/template.json"
+  printf '{}\n' > "$WORK_DIR/template.json"
+  if [[ "$ACTION" == install || "$ACTION" == update ]]; then load_deployment_templates; fi
   if [[ "$ACTION" == install ]]; then
     cp -- "$WORK_DIR/template.json" "$WORK_DIR/local.json"
     candidate_files=("$WORK_DIR/docker-compose.yml" "${COMPOSE_FILES[@]:1}")
     compose_with "${candidate_files[@]}" -- config --format json > "$WORK_DIR/effective.json"
     container_ids=$(compose_with "${candidate_files[@]}" -- ps -a -q "$SERVICE")
     [[ -z "$container_ids" ]] || die "Existing service containers were found; restore their original Compose configuration and use update"
-    choose_gpu
   fi
-  log "GPU access: $SELECTED_GPU; the application's GPU switch will not be changed"
+}
+
+prepare_gpu() {
+  local mode
   printf '{}\n' > "$WORK_DIR/gpu.json"
+  [[ "$ACTION" == gpu ]] || return 0
+  command -v timeout >/dev/null 2>&1 || die "timeout is required for GPU detection"
+  docker info --format '{{json .}}' > "$WORK_DIR/docker-info.json"
+  detect_host_gpu "$WORK_DIR/docker-info.json"
+  if gpu_ready vaapi; then SELECTED_GPU=vaapi
+  elif gpu_ready nvidia; then SELECTED_GPU=nvidia
+  else
+    SELECTED_GPU=cpu
+    log "No usable GPU detected; 91 will use the CPU to generate video covers and previews."
+  fi
   case "$SELECTED_GPU" in
     nvidia|vaapi)
+      log "GPU access: $SELECTED_GPU; the application's GPU switch will not be changed"
+      load_deployment_templates
       mode="docker-compose.gpu-$SELECTED_GPU.yml"
       docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/$mode" "$WORK_DIR/$mode"
       raw_json "$WORK_DIR/docker-compose.yml" "$WORK_DIR/$mode" > "$WORK_DIR/gpu.json"
       ;;
   esac
+}
+
+build_candidate() {
+  local -a candidate_files
   json -n --slurpfile template "$WORK_DIR/template.json" --slurpfile local "$WORK_DIR/local.json" \
-    --slurpfile gpu "$WORK_DIR/gpu.json" --arg mode "$SELECTED_GPU" --arg image "$target_image" \
-    --arg action "$ACTION" --arg requested_image "$REQUESTED_IMAGE" \
-    --arg port "$INSTALL_PORT" --arg directory "$INSTALL_DATA_DIR" '
-      merge_deployment($template[0]; $local[0]) |
+    --slurpfile gpu "$WORK_DIR/gpu.json" --arg mode "$SELECTED_GPU" --arg image "$TARGET_IMAGE" \
+    --arg action "$ACTION" --arg requested_image "$REQUESTED_IMAGE" '
+      (if $action == "install" or $action == "update" then merge_deployment($template[0]; $local[0]) else $local[0] end) |
       (if $action == "install" or $requested_image != "" then .services[$service].image = $image else . end) |
-      installation_settings($port; $directory) |
       configure_gpu($mode; $gpu[0])
     ' > "$WORK_DIR/proposed.json"
   if [[ "$TELEGRAM_MODE" == enable ]]; then prepare_telegram; fi
   compose_with "$WORK_DIR/proposed.json" -- config --format yaml "${RAW_OPTIONS[@]}" > "$WORK_DIR/candidate.yml"
   candidate_files=("$WORK_DIR/candidate.yml" "${COMPOSE_FILES[@]:1}")
   compose_with "${candidate_files[@]}" -- config --format json > "$WORK_DIR/resolved.json"
+}
+
+validate_candidate() {
   # Atomic replacement changes a file bind mount's inode. Restart the website
   # when it reads Telegram deployment metadata so it receives the current file.
   if json -e '(.services[$service].environment.VIDEO_TELEGRAM_COMPOSE // "") != ""' < "$WORK_DIR/resolved.json" >/dev/null; then
     FORCE_RECREATE=true
   fi
-  json -e --arg image "$target_image" '.services[$service].image == $image' < "$WORK_DIR/resolved.json" >/dev/null ||
+  json -e --arg image "$TARGET_IMAGE" '.services[$service].image == $image' < "$WORK_DIR/resolved.json" >/dev/null ||
     die "An overlay overrides the target image; update that overlay or its environment variable first"
   json -e --arg mode "$SELECTED_GPU" --slurpfile before "$WORK_DIR/effective.json" '
     (.services[$service] | gpu_modes) ==
     (if $mode == "keep" then ($before[0].services[$service] | gpu_modes)
      elif $mode == "cpu" then [] else [$mode] end)
-  ' < "$WORK_DIR/resolved.json" >/dev/null || die "An overlay conflicts with the requested GPU mode; update it or use --gpu keep"
+  ' < "$WORK_DIR/resolved.json" >/dev/null || die "An overlay conflicts with the GPU configuration; update that overlay first"
   if [[ "$TELEGRAM_MODE" == enable ]]; then validate_and_pull_telegram; fi
-  if [[ "$ACTION" == update ]]; then
+}
+
+apply_candidate() {
+  if [[ "$ACTION" == gpu ]] &&
+    json -e --slurpfile before "$WORK_DIR/effective.json" '. == $before[0]' < "$WORK_DIR/resolved.json" >/dev/null; then
+    return
+  fi
+  if [[ "$ACTION" != install ]]; then
     json -e --slurpfile before "$WORK_DIR/effective.json" '.name == $before[0].name' < "$WORK_DIR/resolved.json" >/dev/null ||
-      die "The update would change the Compose project name"
-    cmp -s -- "$TARGET" "$WORK_DIR/original.yml" || die "Compose file changed during the update; retry with the latest local configuration"
+      die "The operation would change the Compose project name"
+    cmp -s -- "$TARGET" "$WORK_DIR/original.yml" || die "Compose file changed during the operation; retry with the latest local configuration"
     BACKUP_FILE=$(mktemp "$TARGET.bak-$(date -u +%Y%m%dT%H%M%S).XXXXXX")
     cp -p -- "$TARGET" "$BACKUP_FILE"
     log "Configuration backup: $BACKUP_FILE"
@@ -752,13 +741,27 @@ apply_deployment() {
     ln -- "$WORK_DIR/candidate.yml" "$TARGET" || die "Compose configuration appeared during installation; it has been left unchanged"
     NEEDS_ROLLBACK=true
   fi
-  start_with "${COMPOSE_FILES[@]}"
+  if [[ "$ACTION" == gpu || "$ACTION" == telegram ]]; then
+    # Recreating a container must not follow a tag that has changed locally.
+    json -n --arg image "$OLD_IMAGE" '{services: {($service): {image: $image}}}' > "$WORK_DIR/runtime-image.yml"
+    start_with "${COMPOSE_FILES[@]}" "$WORK_DIR/runtime-image.yml"
+  else
+    start_with "${COMPOSE_FILES[@]}"
+  fi
   NEEDS_ROLLBACK=false
   log "Deployment complete. Compose configuration: $TARGET"
-  log "Enable GPU in the administration panel when ready"
+  case "$SELECTED_GPU" in nvidia|vaapi) log "Enable GPU in the administration panel when ready" ;; esac
   if [[ "$TELEGRAM_MODE" == enable ]]; then
-    log "Telegram Bot API deployed. Set the Bot Token, allowed user IDs and receiving switch in the website administration panel"
+    log "Telegram Bot API deployed. Configure the Bot Token and allowed user IDs, then enable Telegram in the 91 administration panel."
   fi
+}
+
+apply_deployment() {
+  prepare_deployment
+  prepare_gpu
+  build_candidate
+  validate_candidate
+  apply_candidate
 }
 
 main() {
@@ -766,11 +769,11 @@ main() {
   if [[ "$ACTION" == reset-password ]]; then
     command -v docker >/dev/null 2>&1 || die "docker is required; install it before running this script"
     deployment_files
-    reset_password "${RESET_ARGS[@]}"
+    reset_password
     return
   fi
   local command help_text option
-  for command in docker flock timeout cmp mktemp cp mv ln chmod chown; do
+  for command in docker flock cmp mktemp cp mv ln chmod chown; do
     command -v "$command" >/dev/null 2>&1 || die "$command is required; install it before running this script"
   done
   help_text=$(docker compose config --help)
@@ -782,7 +785,7 @@ main() {
   ensure_jq
   # Lock a separate inode because the main Compose file is replaced atomically.
   exec {UPDATE_LOCK}> "$(dirname -- "$TARGET")/.$(basename -- "$TARGET").update.lock"
-  flock -n "$UPDATE_LOCK" || die "Another deployment update is running"
+  flock -n "$UPDATE_LOCK" || die "Another deployment operation is running"
   WORK_DIR=$(mktemp -d "$(dirname -- "$TARGET")/.docker-update.XXXXXX")
   trap 'finish "$?"' EXIT
   trap 'exit 130' INT
