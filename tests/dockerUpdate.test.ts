@@ -1,0 +1,1108 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
+
+const repository = fileURLToPath(new URL("../", import.meta.url));
+const script = join(repository, "91-docker.sh");
+const service = "video-site-91";
+const oldImage = `sha256:${"a".repeat(64)}`;
+const newImage = `sha256:${"b".repeat(64)}`;
+const oldTelegramImage = `sha256:${"c".repeat(64)}`;
+const dockerPath = spawnSync("bash", ["-c", "command -v docker"], { encoding: "utf8" }).stdout?.trim();
+const composeHelp = dockerPath && spawnSync(dockerPath, ["compose", "config", "--help"], { encoding: "utf8" });
+const hasCompose = composeHelp && composeHelp.status === 0 && composeHelp.stdout.includes("--no-env-resolution");
+const hasJq = spawnSync("jq", ["--version"]).status === 0;
+const requiresCompose = { skip: !hasJq || !hasCompose ? "jq and Docker Compose with raw config support are required" : false };
+
+type EngineState = {
+  pulled: boolean;
+  calls: string[][];
+  starts: any[];
+  failPull?: boolean;
+  failStart?: boolean;
+  failRollback?: boolean;
+  changeDuringPull?: boolean;
+  existingContainer?: boolean;
+  createConfigDuringPull?: boolean;
+  telegramContainer?: boolean;
+  telegramRunning?: boolean;
+  failTelegramPull?: boolean;
+  resetExit?: number;
+  resetInput?: string;
+  info: { Runtimes: Record<string, unknown>; OperatingSystem: string; SecurityOptions?: string[] };
+};
+
+// Simulate Engine operations; use the actual Compose CLI for YAML, variables,
+// dotenv files, overlays and validation. No containers or images are changed.
+const dockerProbe = `#!${process.execPath}
+const { readFileSync, readSync, writeFileSync, copyFileSync } = require("node:fs");
+const { basename, join } = require("node:path");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const root = process.env.TEST_DEPLOYMENT;
+const path = join(root, "engine.json");
+const state = JSON.parse(readFileSync(path, "utf8"));
+state.calls.push(args);
+const save = () => writeFileSync(path, JSON.stringify(state));
+const output = (value) => process.stdout.write(value + "\\n");
+const exit = (code = 0) => { save(); process.exit(code); };
+if (args[0] === "compose") {
+  let commandIndex = 1;
+  while (["--project-directory", "--project-name", "-p", "-f", "--file"].includes(args[commandIndex])) commandIndex += 2;
+  const command = args[commandIndex];
+  if (command === "config") {
+    save();
+    const result = spawnSync(process.env.TEST_REAL_DOCKER, args, { stdio: "inherit" });
+    process.exit(result.status ?? 1);
+  }
+  if (command === "exec") {
+    if (state.existingContainer === false) { process.stderr.write("service video-site-91 is not running\\n"); exit(1); }
+    const values = args.slice(commandIndex + 1).filter((value) => value !== "-T");
+    if (values[0] !== "video-site-91" || values[1] !== "/opt/video-site-91/server" || values[2] !== "reset-password") exit(2);
+    if (!values.some((value) => value === "--user-id" || value.startsWith("--user-id="))) {
+      output("ID | Username | Role | Account banned\\n7 | test-user | admin | false");
+      process.stdout.write("User ID to reset: ");
+      const buffer = Buffer.alloc(1);
+      let input = "";
+      while (readSync(0, buffer, 0, 1, null)) { if (buffer[0] === 10) break; input += buffer.toString(); }
+      state.resetInput = input;
+      if (!input.trim()) { process.stderr.write("no user ID supplied; password was not changed\\n"); exit(1); }
+    }
+    if (state.resetExit) { process.stderr.write("server rejected the reset request\\n"); exit(state.resetExit); }
+    output("New password: Generated123");
+    exit();
+  }
+  if (command === "ps") {
+    if (args.at(-1) === "telegram-bot-api") {
+      if (state.telegramContainer && (args.includes("-a") || state.telegramRunning !== false)) output("existing-telegram");
+    } else if (state.existingContainer !== false) output("existing-container");
+    exit();
+  }
+  if (command === "rm" || command === "stop") exit();
+  if (command === "up") {
+    const config = spawnSync(process.env.TEST_REAL_DOCKER,
+      [...args.slice(0, commandIndex), "config", "--format", "json"], { encoding: "utf8" });
+    if (config.status) { process.stderr.write(config.stderr); exit(config.status); }
+    state.starts.push(JSON.parse(config.stdout));
+    exit((state.starts.length === 1 && state.failStart) || (state.starts.length > 1 && state.failRollback) ? 1 : 0);
+  }
+} else if (args[0] === "info") { output(JSON.stringify(state.info)); exit();
+} else if (args[0] === "context") { output("unix:///var/run/docker.sock"); exit();
+} else if (args[0] === "inspect") { output(args.at(-1) === "existing-telegram" ? process.env.TEST_OLD_TELEGRAM_IMAGE : process.env.TEST_OLD_IMAGE); exit();
+} else if (args[0] === "pull") {
+  state.pulled = true;
+  if (state.changeDuringPull) writeFileSync(join(root, "docker-compose.yml"), "# concurrent edit\\n" + readFileSync(join(root, "docker-compose.yml"), "utf8"));
+  if (state.createConfigDuringPull) writeFileSync(join(root, "docker-compose.yml"), "# created by another process\\nservices: {}\\n");
+  exit(state.failPull || (state.failTelegramPull && args[1].includes("telegram")) ? 1 : 0);
+} else if (args[0] === "image") { output(state.pulled ? process.env.TEST_NEW_IMAGE : process.env.TEST_OLD_IMAGE); exit();
+} else if (args[0] === "create") { output("template-container"); exit();
+} else if (args[0] === "cp") {
+  try { copyFileSync(join(root, "templates", basename(args[1])), args[2]); exit(); }
+  catch { exit(1); }
+} else if (args[0] === "rm") { output("template-container"); exit(); }
+process.stderr.write("Unexpected Docker command: " + JSON.stringify(args));
+exit(1);
+`;
+
+function fixture(t: TestContext) {
+  const root = mkdtempSync(join(tmpdir(), "91-shell-docker-update-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  mkdirSync(join(root, "templates"));
+  const target = join(root, "docker-compose.yml");
+  copyFileSync(join(repository, "docker-compose.yml"), target);
+  for (const name of ["docker-compose.yml", "docker-compose.gpu-nvidia.yml", "docker-compose.gpu-vaapi.yml", "tg-docker-compose.yml"]) {
+    copyFileSync(join(repository, name), join(root, "templates", name));
+  }
+  writeFileSync(join(bin, "docker"), dockerProbe, { mode: 0o755 });
+  writeFileSync(join(bin, "nvidia-smi"), '#!/bin/sh\nif [ "$TEST_NVIDIA_MODE" = ready ]; then printf "RTX 4060\\n"; else exit 1; fi\n', { mode: 0o755 });
+  writeFileSync(join(bin, "timeout"), '#!/bin/sh\nif [ "$TEST_NVIDIA_MODE" = timeout ]; then exit 124; fi\nexec /usr/bin/timeout "$@"\n', { mode: 0o755 });
+  // An inherited COMPOSE_FILE must never redirect a test to a real deployment.
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    !key.startsWith("COMPOSE_") && !["DOCKER_HOST", "DOCKER_CONTEXT", "STACK_NAME", "VIDEO_IMAGE", "WEB_PORT", "LOCAL_VALUE", "CUSTOM_VALUE", "PRIVATE_FROM_HOST", "TELEGRAM_API_ID", "TELEGRAM_API_HASH"].includes(key)
+  ));
+  const env = {
+    ...environment,
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    TEST_DEPLOYMENT: root,
+    TEST_REAL_DOCKER: dockerPath!,
+    TEST_OLD_IMAGE: oldImage,
+    TEST_NEW_IMAGE: newImage,
+    TEST_OLD_TELEGRAM_IMAGE: oldTelegramImage,
+    TEST_READY_GPU: "",
+    TEST_NVIDIA_MODE: "none",
+  };
+  const stateFile = join(root, "engine.json");
+  const initial: EngineState = { pulled: false, calls: [], starts: [], info: { Runtimes: { nvidia: {} }, OperatingSystem: "Debian" } };
+  writeFileSync(stateFile, JSON.stringify(initial));
+  return {
+    root, target, env,
+    state: () => JSON.parse(readFileSync(stateFile, "utf8")) as EngineState,
+    changeState(update: Partial<EngineState>) { writeFileSync(stateFile, JSON.stringify({ ...this.state(), ...update })); },
+    backups: () => readdirSync(root).filter((name) => name.includes(".bak-")),
+    raw() {
+      const result = spawnSync(dockerPath!, ["compose", "--project-directory", root, "-f", target, "config", "--format", "json", "--no-interpolate", "--no-path-resolution", "--no-normalize", "--no-env-resolution"], { cwd: root, env, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    },
+    run(args: string[] = [], overrides: Record<string, string> = {}) {
+      return spawnSync("bash", ["-c", 'source "$1"; detect_host_gpu() { read -r -a READY_GPU <<< "$TEST_READY_GPU"; }; main "${@:2}"', "bash", script, ...args], {
+        cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000,
+      });
+    },
+    functions(program: string, overrides: Record<string, string> = {}) {
+      return spawnSync("bash", ["-c", `source "$1"\n${program}`, "bash", script], {
+        cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 15_000,
+      });
+    },
+  };
+}
+
+function succeeded(result: ReturnType<typeof spawnSync>) {
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+}
+
+function freshDeployment(t: TestContext) {
+  const f = fixture(t);
+  rmSync(f.target);
+  f.changeState({ existingContainer: false });
+  return f;
+}
+
+const telegramCredentials = {
+  TELEGRAM_API_ID: "12345",
+  TELEGRAM_API_HASH: "0123456789abcdef0123456789abcdef",
+};
+
+test("password reset invokes the running server and leaves deployment files untouched", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  const result = f.run(["reset-password", "--user-id", "7"]);
+  succeeded(result);
+  const exec = f.state().calls.find((args) => args.includes("exec"));
+  assert.deepEqual(exec?.slice(exec.indexOf("exec")), ["exec", "-T", service, "/opt/video-site-91/server", "reset-password", "--user-id", "7"]);
+  assert.equal(result.stdout.match(/New password:/g)?.length, 1);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.deepEqual(f.backups(), []);
+  assert.deepEqual(f.state().starts, []);
+  assert.equal(f.state().pulled, false);
+  assert.equal(f.state().calls.some((args) => args.includes("--help") || args[0] === "info" || args[0] === "create"), false);
+});
+
+test("password reset preserves custom Compose files, project name and server arguments", requiresCompose, (t) => {
+  const f = fixture(t);
+  const renamed = join(f.root, "production.yml");
+  renameSync(f.target, renamed);
+  const result = f.run(["-f", renamed, "-p", "existing-project", "reset-password", "--user-id=7", "--config", "config"]);
+  succeeded(result);
+  const exec = f.state().calls.find((args) => args.includes("exec"))!;
+  assert.equal(exec[exec.indexOf("--project-name") + 1], "existing-project");
+  assert.equal(exec[exec.indexOf("-f") + 1], renamed);
+  assert.deepEqual(exec.slice(-3), ["--user-id=7", "--config", "config"]);
+  assert.equal(existsSync(f.target), false);
+});
+
+test("password reset forwards container config paths containing spaces", requiresCompose, (t) => {
+  const f = fixture(t);
+  succeeded(f.run(["reset-password", "--user-id", "7", "--config=/opt/config files/custom.yaml"]));
+  const exec = f.state().calls.find((args) => args.includes("exec"))!;
+  assert.equal(exec.at(-1), "--config=/opt/config files/custom.yaml");
+});
+
+test("password reset skips jq installation, GPU detection and config rendering", requiresCompose, (t) => {
+  const f = fixture(t);
+  const result = f.functions(`
+command() {
+  if [[ "$1" == -v && "$2" == jq ]]; then return 1; fi
+  builtin command "$@"
+}
+ensure_jq() { exit 91; }
+detect_host_gpu() { exit 92; }
+raw_json() { exit 93; }
+main reset-password --user-id 7
+`);
+  succeeded(result);
+  assert.ok(f.state().calls.some((args) => args.includes("exec")));
+  assert.equal(f.state().calls.some((args) => args.includes("--no-env-resolution")), false);
+});
+
+test("password reset forwards piped user selection to the server", requiresCompose, (t) => {
+  const f = fixture(t);
+  const result = f.functions('printf "7\\n" | bash "$1" reset-password');
+  succeeded(result);
+  assert.equal(f.state().resetInput, "7");
+  assert.match(result.stdout, /User ID to reset/);
+  assert.match(result.stdout, /New password: Generated123/);
+});
+
+test("password reset keeps interactive TTY selection available", requiresCompose, (t) => {
+  if (spawnSync("script", ["--version"]).status !== 0) return t.skip("PTY utility script is unavailable");
+  const f = fixture(t);
+  const entry = join(f.root, "interactive-reset.sh");
+  writeFileSync(entry, 'bash "$TEST_SCRIPT" reset-password\n');
+  const result = spawnSync("script", ["-q", "-e", "-c", `bash '${entry}'`, "/dev/null"], {
+    cwd: f.root, env: { ...f.env, TEST_SCRIPT: script }, encoding: "utf8", timeout: 15_000, input: "7\n",
+  });
+  succeeded(result);
+  const exec = f.state().calls.find((args) => args.includes("exec"))!;
+  assert.equal(exec.includes("-T"), false);
+  assert.equal(f.state().resetInput, "7");
+});
+
+test("password reset preserves server failure exit codes", requiresCompose, (t) => {
+  const f = fixture(t);
+  f.changeState({ resetExit: 23 });
+  const result = f.run(["reset-password", "--user-id", "7"]);
+  assert.equal(result.status, 23);
+  assert.match(result.stderr, /server rejected/);
+  assert.deepEqual(f.state().starts, []);
+});
+
+test("password reset does not start a stopped website container", requiresCompose, (t) => {
+  const f = fixture(t);
+  f.changeState({ existingContainer: false });
+  const result = f.run(["reset-password", "--user-id", "7"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not running/);
+  assert.deepEqual(f.state().starts, []);
+  assert.equal(f.state().pulled, false);
+});
+
+test("password reset requires an existing deployment", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  const result = f.run(["reset-password", "--user-id", "7"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /requires an existing Compose configuration/);
+  assert.equal(existsSync(f.target), false);
+  assert.equal(f.state().calls.some((args) => args.includes("exec")), false);
+});
+
+for (const options of [["--image", "example:latest"], ["--gpu", "nvidia"], ["--telegram", "enable"], ["--port", "8181"]]) {
+  test(`password reset rejects unrelated deployment option ${options[0]}`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const result = f.run(["reset-password", "--user-id", "7", ...options]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Deployment options cannot be combined/);
+    assert.deepEqual(f.state().calls, []);
+  });
+}
+
+test("password reset options cannot accidentally trigger installation", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  const result = f.run(["--user-id", "7"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /require the reset-password action/);
+  assert.equal(existsSync(f.target), false);
+  assert.deepEqual(f.state().calls, []);
+});
+
+test("Telegram is absent from the default installation", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  succeeded(f.run(["install"]));
+  const services = f.raw().services;
+  assert.equal(services["telegram-bot-api"], undefined);
+  assert.equal(services[service].environment.VIDEO_TELEGRAM_COMPOSE, undefined);
+});
+
+test("Telegram enable prepares credentials, shared data, service network and actual Compose filename", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  mkdirSync(join(f.root, "data"));
+  const config = join(f.root, "data/config.yaml");
+  const app = "telegram:\n  enabled: false\n  bot_token: keep-token\n  allowed_user_ids: [123]\n";
+  writeFileSync(config, app);
+  succeeded(f.run(["update", "--telegram", "enable"], telegramCredentials));
+  const result = f.raw();
+  const bot = result.services["telegram-bot-api"];
+  const site = result.services[service];
+  assert.equal(bot.environment.TELEGRAM_API_ID, telegramCredentials.TELEGRAM_API_ID);
+  assert.equal(bot.environment.TELEGRAM_API_HASH, telegramCredentials.TELEGRAM_API_HASH);
+  assert.equal(bot.environment.TELEGRAM_LOCAL, "1");
+  assert.equal(bot.environment.TELEGRAM_HTTP_PORT, "7878");
+  assert.equal(bot.volumes[0].source, join(f.root, "data/telegram"));
+  assert.ok(site.depends_on["telegram-bot-api"]);
+  assert.ok(site.volumes.some((mount: any) => mount.source === bot.volumes[0].source && mount.target === "/var/lib/telegram-bot-api"));
+  assert.ok(site.volumes.some((mount: any) => mount.source === f.target && mount.target === site.environment.VIDEO_TELEGRAM_COMPOSE && mount.read_only));
+  assert.equal(readFileSync(config, "utf8"), app);
+  assert.equal(statSync(f.target).mode & 0o777, 0o600);
+  assert.equal(readFileSync(join(f.root, f.backups()[0]), "utf8"), original);
+  assert.ok(f.state().calls.some((args) => args[0] === "pull" && args[1] === bot.image));
+  assert.ok(f.state().calls.some((args) => args.includes("up") && args.includes("--force-recreate")));
+});
+
+test("Telegram first install follows custom data directory and combines with GPU access", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  const target = join(f.root, "custom.yml");
+  const data = join(f.root, "private data");
+  succeeded(f.run(["install", "-f", target, "--data-dir", data, "--telegram", "enable"], { ...telegramCredentials, TEST_READY_GPU: "nvidia" }));
+  const document = parse(readFileSync(target, "utf8"));
+  const site = document.services[service];
+  assert.equal(document.services["telegram-bot-api"].volumes[0].source, join(data, "telegram"));
+  assert.ok(site.volumes.some((mount: any) => mount.source === target && mount.read_only));
+  assert.equal(site.deploy.resources.reservations.devices[0].driver, "nvidia");
+});
+
+test("Telegram enable reuses existing credentials, pinned image, port and data", requiresCompose, (t) => {
+  const f = fixture(t);
+  const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
+  const bot = document.services["telegram-bot-api"];
+  bot.image = "aiogram/telegram-bot-api:pinned";
+  Object.assign(bot.environment, telegramCredentials);
+  bot.environment.TELEGRAM_HTTP_PORT = "8787";
+  bot.volumes = ["./custom-tg:/var/lib/telegram-bot-api"];
+  document.services[service].volumes[1] = "./custom-tg:/var/lib/telegram-bot-api";
+  writeFileSync(f.target, JSON.stringify(document));
+  f.changeState({ telegramContainer: true });
+  succeeded(f.run(["update", "--telegram", "enable"]));
+  const after = f.raw().services["telegram-bot-api"];
+  assert.equal(after.image, bot.image);
+  assert.equal(after.environment.TELEGRAM_API_HASH, telegramCredentials.TELEGRAM_API_HASH);
+  assert.equal(after.environment.TELEGRAM_HTTP_PORT, "8787");
+  assert.equal(after.volumes[0].source, join(f.root, "custom-tg"));
+});
+
+test("Telegram enable supports application named volumes and custom Compose networks", requiresCompose, (t) => {
+  const f = fixture(t);
+  const document = parse(readFileSync(f.target, "utf8"));
+  document.services[service].volumes = ["app-data:/opt/video-site-91/data"];
+  document.services[service].networks = ["private"];
+  document.volumes = { "app-data": {} };
+  document.networks = { private: {} };
+  writeFileSync(f.target, JSON.stringify(document));
+  succeeded(f.run(["update", "--telegram", "enable"], telegramCredentials));
+  const after = f.raw();
+  assert.equal(after.services["telegram-bot-api"].volumes[0].source, "91-telegram-data");
+  assert.ok(after.volumes["91-telegram-data"]);
+  assert.ok("private" in after.services["telegram-bot-api"].networks);
+});
+
+test("Telegram remains configured during an ordinary update", requiresCompose, (t) => {
+  const f = fixture(t);
+  succeeded(f.run(["update", "--telegram", "enable"], telegramCredentials));
+  const before = f.raw().services["telegram-bot-api"];
+  const previousCalls = f.state().calls.length;
+  succeeded(f.run(["update"]));
+  assert.deepEqual(f.raw().services["telegram-bot-api"], before);
+  assert.ok(f.state().calls.slice(previousCalls).some((args) => args.includes("up") && args.includes("--force-recreate")), "Refresh the website's Compose file bind mount after atomic replacement");
+});
+
+for (const settings of [
+  {},
+  { TELEGRAM_API_ID: "12345" },
+  { TELEGRAM_API_ID: "wrong", TELEGRAM_API_HASH: telegramCredentials.TELEGRAM_API_HASH },
+  { TELEGRAM_API_ID: "12345", TELEGRAM_API_HASH: "wrong" },
+]) {
+  test(`Telegram missing or invalid credentials stop non-interactive changes: ${Object.keys(settings).join(",")}`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const original = readFileSync(f.target, "utf8");
+    const result = f.run(["update", "--telegram", "enable"], settings);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /missing or invalid/);
+    assert.equal(readFileSync(f.target, "utf8"), original);
+    assert.deepEqual(f.state().starts, []);
+  });
+}
+
+test("Telegram prompts visibly for missing parameters and retries invalid input", requiresCompose, (t) => {
+  if (spawnSync("script", ["--version"]).status !== 0) return t.skip("PTY utility script is unavailable");
+  const f = fixture(t);
+  const entry = join(f.root, "interactive.sh");
+  writeFileSync(entry, 'source "$TEST_SCRIPT"\ndetect_host_gpu() { READY_GPU=(); }\nmain update --telegram enable\n');
+  const result = spawnSync("script", ["-q", "-e", "-c", `bash '${entry}'`, "/dev/null"], {
+    cwd: f.root, env: { ...f.env, TEST_SCRIPT: script }, encoding: "utf8", timeout: 30_000,
+    input: `invalid\n${telegramCredentials.TELEGRAM_API_ID}\ninvalid\n${telegramCredentials.TELEGRAM_API_HASH}\n`,
+  });
+  succeeded(result);
+  assert.match(result.stdout, /TELEGRAM_API_ID/);
+  assert.match(result.stdout, /TELEGRAM_API_HASH/);
+  assert.ok(result.stdout.includes(telegramCredentials.TELEGRAM_API_HASH), "Hash is echoed in the terminal as requested");
+  assert.equal(f.raw().services["telegram-bot-api"].environment.TELEGRAM_API_HASH, telegramCredentials.TELEGRAM_API_HASH);
+});
+
+test("Telegram image pull failure leaves application configuration untouched", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  f.changeState({ failTelegramPull: true });
+  const result = f.run(["update", "--telegram", "enable"], telegramCredentials);
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.deepEqual(f.backups(), []);
+  assert.deepEqual(f.state().starts, []);
+});
+
+test("Telegram new-service rollback removes its container without deleting data", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  f.changeState({ failStart: true });
+  const result = f.run(["update", "--telegram", "enable"], telegramCredentials);
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(f.state().starts.length, 2);
+  const cleanup = f.state().calls.find((args) => args[0] === "compose" && args.includes("rm"));
+  assert.ok(cleanup?.includes("telegram-bot-api"));
+  assert.equal(cleanup?.includes("-v"), false);
+  assert.equal(f.state().starts[1].services[service].image, oldImage);
+});
+
+test("Telegram existing-service rollback restores the previous Bot API image", requiresCompose, (t) => {
+  const f = fixture(t);
+  const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
+  Object.assign(document.services["telegram-bot-api"].environment, telegramCredentials);
+  writeFileSync(f.target, JSON.stringify(document));
+  const original = readFileSync(f.target, "utf8");
+  f.changeState({ failStart: true, telegramContainer: true });
+  const result = f.run(["update", "--telegram", "enable"]);
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.ok(f.state().starts.some((deployment) => deployment.services["telegram-bot-api"].image === oldTelegramImage));
+  assert.equal(f.state().starts.at(-1).services[service].image, oldImage);
+});
+
+test("Telegram rollback preserves an existing stopped Bot API", requiresCompose, (t) => {
+  const f = fixture(t);
+  const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
+  Object.assign(document.services["telegram-bot-api"].environment, telegramCredentials);
+  writeFileSync(f.target, JSON.stringify(document));
+  f.changeState({ failStart: true, telegramContainer: true, telegramRunning: false });
+  const result = f.run(["update", "--telegram", "enable"]);
+  assert.notEqual(result.status, 0);
+  const calls = f.state().calls;
+  assert.ok(calls.some((args) => args.includes("stop") && args.at(-1) === "telegram-bot-api"));
+  assert.ok(calls.filter((args) => args.includes("up")).at(-1)?.includes("--no-deps"));
+  assert.equal(f.state().starts.length, 2);
+});
+
+test("Telegram missing image template fails before prompting or changing configuration", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  rmSync(join(f.root, "templates/tg-docker-compose.yml"));
+  const result = f.run(["update", "--telegram", "enable"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /no Telegram deployment template/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+});
+
+test("Telegram credential conflicts in overlays leave both files untouched", requiresCompose, (t) => {
+  const f = fixture(t);
+  const overlay = join(f.root, "telegram.yml");
+  const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
+  Object.assign(document.services["telegram-bot-api"].environment, telegramCredentials, { TELEGRAM_API_HASH: "a".repeat(32) });
+  writeFileSync(overlay, JSON.stringify(document));
+  const original = readFileSync(f.target, "utf8");
+  const other = readFileSync(overlay, "utf8");
+  const result = f.run(["update", "-f", f.target, "-f", overlay, "--telegram", "enable"], telegramCredentials);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /overlay conflicts/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(readFileSync(overlay, "utf8"), other);
+});
+
+test("Telegram rejects unsupported host networking before changing configuration", requiresCompose, (t) => {
+  const f = fixture(t);
+  const document = parse(readFileSync(f.target, "utf8"));
+  delete document.services[service].ports;
+  document.services[service].network_mode = "host";
+  writeFileSync(f.target, JSON.stringify(document));
+  const original = readFileSync(f.target, "utf8");
+  const result = f.run(["update", "--telegram", "enable"], telegramCredentials);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Compose service network/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+});
+
+for (const invalid of ["fractional port", "Bot API child mount", "website child mount"]) {
+  test(`Telegram rejects invalid ${invalid} accepted by generic Compose validation`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
+    const bot = document.services["telegram-bot-api"];
+    Object.assign(bot.environment, telegramCredentials);
+    if (invalid === "fractional port") bot.environment.TELEGRAM_HTTP_PORT = "8787.5";
+    else document.services[invalid === "website child mount" ? service : "telegram-bot-api"].volumes.push("./other:/var/lib/telegram-bot-api/library");
+    writeFileSync(f.target, JSON.stringify(document));
+    const original = readFileSync(f.target, "utf8");
+    const result = f.run(["update", "--telegram", "enable"]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, invalid === "fractional port" ? /valid TELEGRAM_HTTP_PORT/ : /independent child mounts/);
+    assert.equal(readFileSync(f.target, "utf8"), original);
+  });
+}
+
+test("Shell updater has valid Bash syntax and documents its dependencies", () => {
+  succeeded(spawnSync("bash", ["-n", script], { encoding: "utf8" }));
+  const help = spawnSync("bash", [script, "--help"], { encoding: "utf8" });
+  succeeded(help);
+  assert.match(help.stdout, /jq/);
+  assert.doesNotMatch(readFileSync(script, "utf8"), /python|docker run/);
+});
+
+test("an empty directory is deployed automatically with the image defaults", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  succeeded(f.run());
+  const s = f.raw().services[service];
+  assert.equal(s.image, "ghcr.io/nianzhibai/91:stable");
+  assert.equal(s.ports[0].published, "9191");
+  assert.equal(s.volumes[0].source, "./data");
+  assert.equal(s.volumes[0].target, "/opt/video-site-91/data");
+  assert.equal(s.environment.VIDEO_RESTART_MANAGED, "true");
+  assert.equal(s.deploy, undefined);
+  assert.deepEqual(f.backups(), []);
+  assert.equal(f.state().starts.length, 1);
+  assert.equal(statSync(f.target).mode & 0o777, 0o600);
+});
+
+test("first deployment supports custom port, data directory, image and NVIDIA access", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  const data = join(f.root, "private data");
+  mkdirSync(data);
+  const appConfig = join(data, "config.yaml");
+  writeFileSync(appConfig, "generation:\n  use_gpu: false\n");
+  succeeded(f.run(["install", "--port", "8181", "--data-dir", data, "--image", "ghcr.io/nianzhibai/91:v9.0.0"], { TEST_READY_GPU: "nvidia" }));
+  const s = f.raw().services[service];
+  assert.equal(s.image, "ghcr.io/nianzhibai/91:v9.0.0");
+  assert.equal(s.ports[0].published, "8181");
+  assert.equal(s.volumes[0].source, data);
+  assert.equal(s.deploy.resources.reservations.devices[0].driver, "nvidia");
+  assert.equal(readFileSync(appConfig, "utf8"), "generation:\n  use_gpu: false\n");
+  assert.deepEqual(f.backups(), []);
+});
+
+test("first deployment prepares VAAPI automatically and later updates keep its settings", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  succeeded(f.run(["install", "--port", "8182", "--data-dir", "./private data"], { TEST_READY_GPU: "vaapi" }));
+  const before = f.raw().services[service];
+  assert.equal(before.devices[0].source, "/dev/dri");
+  f.changeState({ existingContainer: true });
+  succeeded(f.run(["update"], { TEST_READY_GPU: "vaapi" }));
+  const after = f.raw().services[service];
+  assert.deepEqual(after.ports, before.ports);
+  assert.deepEqual(after.volumes, before.volumes);
+  assert.deepEqual(after.devices, before.devices);
+  assert.equal(f.backups().length, 1);
+});
+
+test("explicit install refuses to overwrite an existing deployment", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  const result = f.run(["install"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /already exists/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(f.state().pulled, false);
+});
+
+test("explicit update requires an existing Compose file", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  const result = f.run(["update"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /No Compose deployment found/);
+  assert.equal(existsSync(f.target), false);
+  assert.equal(f.state().pulled, false);
+});
+
+test("first deployment honors COMPOSE_FILE and project name from dotenv", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  writeFileSync(join(f.root, ".env"), "COMPOSE_FILE=production.yml\nCOMPOSE_PROJECT_NAME=new-project\n");
+  succeeded(f.run(["install"]));
+  assert.equal(existsSync(f.target), false);
+  assert.equal(existsSync(join(f.root, "production.yml")), true);
+  assert.equal(f.state().starts[0].name, "new-project");
+});
+
+test("first deployment supports a custom filename and preserves existing overlays", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  const target = join(f.root, "application.yml");
+  const overlay = join(f.root, "custom.yml");
+  const original = "services:\n  video-site-91:\n    ports: !override [\"8183:9191\"]\n";
+  writeFileSync(overlay, original);
+  succeeded(f.run(["install", "-f", target, "-f", overlay, "-p", "new-project"]));
+  assert.equal(existsSync(target), true);
+  assert.equal(existsSync(f.target), false);
+  assert.equal(readFileSync(overlay, "utf8"), original);
+  assert.equal(f.state().starts[0].services[service].ports[0].published, "8183");
+  assert.equal(f.state().starts[0].name, "new-project");
+});
+
+test("first deployment rejects service containers whose original configuration is missing", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  f.changeState({ existingContainer: true });
+  const result = f.run(["install"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /restore their original Compose configuration/);
+  assert.equal(existsSync(f.target), false);
+  assert.deepEqual(f.state().starts, []);
+});
+
+test("a configuration created during first deployment is never overwritten", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  f.changeState({ createConfigDuringPull: true });
+  const result = f.run(["install"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /appeared during installation/);
+  assert.equal(readFileSync(f.target, "utf8"), "# created by another process\nservices: {}\n");
+  assert.deepEqual(f.state().starts, []);
+});
+
+test("failed first startup keeps generated configuration and data for a retry", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  const data = join(f.root, "data");
+  mkdirSync(data);
+  writeFileSync(join(data, "keep.txt"), "keep existing data");
+  f.changeState({ failStart: true });
+  const result = f.run(["install"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /configuration and application data have been kept/);
+  assert.equal(existsSync(f.target), true);
+  assert.equal(readFileSync(join(data, "keep.txt"), "utf8"), "keep existing data");
+  assert.equal(f.state().starts.length, 1, "A new install has no previous image to restore");
+  assert.deepEqual(f.backups(), []);
+  f.changeState({ failStart: false, existingContainer: true });
+  succeeded(f.run());
+  assert.equal(f.state().starts.length, 2);
+});
+
+for (const failure of ["pull", "template"] as const) {
+  test(`first deployment ${failure} failure leaves the target absent`, requiresCompose, (t) => {
+    const f = freshDeployment(t);
+    if (failure === "pull") f.changeState({ failPull: true });
+    else rmSync(join(f.root, "templates/docker-compose.yml"));
+    const result = f.run(["install"]);
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(f.target), false);
+    assert.deepEqual(f.state().starts, []);
+    assert.deepEqual(f.backups(), []);
+  });
+}
+
+for (const port of ["0", "65536", "invalid"]) {
+  test(`invalid first deployment port ${port} stops before image operations`, requiresCompose, (t) => {
+    const f = freshDeployment(t);
+    const result = f.run(["install", "--port", port]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /between 1 and 65535/);
+    assert.equal(f.state().pulled, false);
+    assert.equal(existsSync(f.target), false);
+  });
+}
+
+test("installation-only settings cannot silently change an existing deployment", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  const result = f.run(["--data-dir", "/different/data"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /first deployment only/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(f.state().pulled, false);
+});
+
+function jqInstallation(t: TestContext) {
+  const f = fixture(t);
+  const bin = join(f.root, "bin");
+  const packageLog = join(f.root, "packages.jsonl");
+  const realJq = spawnSync("bash", ["-c", "command -v jq"], { encoding: "utf8" }).stdout.trim();
+  const installer = `#!${process.execPath}
+const { appendFileSync, writeFileSync } = require("node:fs");
+const { basename, join } = require("node:path");
+const { spawnSync } = require("node:child_process");
+const manager = basename(process.argv[1]);
+const args = process.argv.slice(2);
+appendFileSync(process.env.TEST_PACKAGE_LOG, JSON.stringify({manager, args, frontend: process.env.DEBIAN_FRONTEND}) + "\\n");
+if (manager === "sudo") {
+  if (process.env.TEST_SUDO_FAIL === "1") process.exit(1);
+  const child = spawnSync(args[0], args.slice(1), { stdio: "inherit" });
+  process.exit(child.status ?? 1);
+}
+const stage = args.includes("update") ? "update" : "install";
+if (process.env.TEST_INSTALL_FAIL === stage) process.exit(1);
+if (stage === "install" && process.env.TEST_INSTALL_NO_JQ !== "1") {
+  const executable = process.env.TEST_INSTALL_BROKEN_JQ === "1" ? "exit 1" : 'exec "$TEST_REAL_JQ" "$@"';
+  writeFileSync(join(process.env.TEST_DEPLOYMENT, "bin/jq"), "#!/bin/sh\\n" + executable + "\\n", {mode: 0o755});
+}
+`;
+  // Even an incorrect package-manager choice must never reach a host installer.
+  for (const name of ["apt-get", "dnf", "yum", "apk", "zypper", "pacman", "sudo"]) {
+    writeFileSync(join(bin, name), installer, { mode: 0o755 });
+  }
+  const setup = `
+command() {
+  if [[ "$1" == -v ]]; then
+    case "$2" in
+      jq) [[ -x "$TEST_DEPLOYMENT/bin/jq" ]] || return 1 ;;
+      apt-get|dnf|yum|apk|zypper|pacman) [[ "$2" == "$TEST_PACKAGE_MANAGER" ]]; return ;;
+      sudo) [[ "$TEST_HAVE_SUDO" == 1 ]]; return ;;
+    esac
+  fi
+  builtin command "$@"
+}
+id() { printf '%s\\n' "$TEST_INSTALL_UID"; }
+`;
+  return {
+    ...f,
+    calls: () => existsSync(packageLog) ? readFileSync(packageLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [],
+    installed: () => existsSync(join(bin, "jq")),
+    bootstrap(overrides: Record<string, string> = {}, fullUpdate = false) {
+      return f.functions(`${setup}\n${fullUpdate ? 'detect_host_gpu() { READY_GPU=(); }; main --gpu keep' : 'ensure_jq; printf "bootstrap complete\\n"'}`, {
+        TEST_PACKAGE_LOG: packageLog,
+        TEST_PACKAGE_MANAGER: "apt-get",
+        TEST_REAL_JQ: realJq,
+        TEST_INSTALL_UID: "0",
+        TEST_HAVE_SUDO: "1",
+        ...overrides,
+      });
+    },
+  };
+}
+
+for (const [manager, args] of [
+  ["apt-get", ["install", "-y", "--no-install-recommends", "jq"]],
+  ["dnf", ["install", "-y", "jq"]],
+  ["yum", ["install", "-y", "jq"]],
+  ["apk", ["add", "--no-cache", "jq"]],
+  ["zypper", ["--non-interactive", "install", "jq"]],
+  ["pacman", ["-S", "--needed", "--noconfirm", "jq"]],
+] as const) {
+  test(`missing jq is installed automatically with ${manager}`, requiresCompose, (t) => {
+    const f = jqInstallation(t);
+    const result = f.bootstrap({ TEST_PACKAGE_MANAGER: manager });
+    succeeded(result);
+    assert.equal(f.installed(), true);
+    const calls = f.calls();
+    assert.deepEqual(calls.at(-1).args, [...args]);
+    assert.equal(calls.every((call) => call.manager === manager), true);
+    if (manager === "apt-get") {
+      assert.deepEqual(calls[0].args, ["update"]);
+      assert.equal(calls.every((call) => call.frontend === "noninteractive"), true);
+    }
+    assert.match(result.stdout, /jq installed successfully/);
+  });
+}
+
+test("existing jq skips package installation entirely", requiresCompose, (t) => {
+  const f = jqInstallation(t);
+  succeeded(f.bootstrap());
+  const previous = f.calls();
+  succeeded(f.bootstrap({ TEST_PACKAGE_MANAGER: "none", TEST_INSTALL_UID: "1000", TEST_HAVE_SUDO: "0" }));
+  assert.deepEqual(f.calls(), previous);
+});
+
+test("non-root jq installation uses sudo only for package commands", requiresCompose, (t) => {
+  const f = jqInstallation(t);
+  succeeded(f.bootstrap({ TEST_INSTALL_UID: "1000" }));
+  const calls = f.calls();
+  assert.equal(calls.filter((call) => call.manager === "sudo").length, 2);
+  assert.equal(calls.filter((call) => call.manager === "apt-get").length, 2);
+  assert.equal(f.installed(), true);
+});
+
+for (const [scenario, settings, expected] of [
+  ["package list failure", { TEST_INSTALL_FAIL: "update" }, /refresh package lists/],
+  ["install failure", { TEST_INSTALL_FAIL: "install" }, /Automatic jq installation failed/],
+  ["no supported manager", { TEST_PACKAGE_MANAGER: "none" }, /no supported package manager/],
+  ["no sudo privileges", { TEST_INSTALL_UID: "1000", TEST_HAVE_SUDO: "0" }, /requires root privileges/],
+  ["sudo rejection", { TEST_INSTALL_UID: "1000", TEST_SUDO_FAIL: "1" }, /refresh package lists/],
+  ["installer produces no jq", { TEST_INSTALL_NO_JQ: "1" }, /jq is still unavailable/],
+  ["installed jq cannot run", { TEST_INSTALL_BROKEN_JQ: "1" }, /jq is still unavailable/],
+] as const) {
+  test(`${scenario} stops before deployment changes`, requiresCompose, (t) => {
+    const f = jqInstallation(t);
+    const original = readFileSync(f.target, "utf8");
+    const result = f.bootstrap(settings, true);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, expected);
+    assert.equal(readFileSync(f.target, "utf8"), original);
+    assert.deepEqual(f.backups(), []);
+    assert.equal(f.state().pulled, false);
+    assert.deepEqual(f.state().starts, []);
+    if (scenario === "package list failure") {
+      assert.deepEqual(f.calls().map((call) => call.args), [["update"]]);
+    }
+  });
+}
+
+test("Docker update continues after automatic jq installation", requiresCompose, (t) => {
+  const f = jqInstallation(t);
+  succeeded(f.bootstrap({}, true));
+  assert.equal(f.installed(), true);
+  assert.equal(f.state().starts.length, 1);
+  assert.equal(f.backups().length, 1);
+});
+
+test("upgrade preserves custom settings, variable references, env files and other services", requiresCompose, (t) => {
+  const f = fixture(t);
+  writeFileSync(f.target, `name: \${STACK_NAME:-private-stack}
+services:
+  video-site-91:
+    image: \${VIDEO_IMAGE:-ghcr.io/nianzhibai/91:stable}
+    container_name: customized-name
+    ports: ["127.0.0.1:\${WEB_PORT:-8181}:9191"]
+    volumes: ["./private data:/opt/video-site-91/data", "cache:/cache"]
+    env_file: ./service.env
+    environment: {CUSTOM: "\${LOCAL_VALUE:-keep}", ESCAPED: "$$TOKEN"}
+    labels: {custom: keep}
+    networks: [private]
+    restart: always
+  sidecar:
+    image: busybox:1
+    profiles: [maintenance]
+    command: [sleep, infinity]
+networks:
+  private: {}
+volumes:
+  cache: {}
+`);
+  writeFileSync(join(f.root, "service.env"), "PRIVATE_SECRET=not-for-compose\n");
+  const before = f.raw();
+  const template = join(f.root, "templates/docker-compose.yml");
+  writeFileSync(template, readFileSync(template, "utf8") + "    labels:\n      new-default: new-value\n");
+  succeeded(f.run());
+  const after = f.raw();
+  for (const key of ["image", "ports", "volumes", "env_file", "networks", "container_name", "restart"]) {
+    assert.deepEqual(after.services[service][key], before.services[service][key]);
+  }
+  assert.deepEqual(after.services.sidecar, before.services.sidecar);
+  assert.deepEqual(after.services[service].labels, { custom: "keep", "new-default": "new-value" });
+  const text = readFileSync(f.target, "utf8");
+  assert.match(text, /\$\{WEB_PORT:-8181\}/);
+  assert.match(text, /\$\$TOKEN/);
+  assert.doesNotMatch(text, /not-for-compose/);
+});
+
+test("NVIDIA preparation updates one Compose file and preserves the app GPU switch", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  mkdirSync(join(f.root, "data"));
+  const config = join(f.root, "data/config.yaml");
+  writeFileSync(config, "generation:\n  use_gpu: false\n");
+  chmodSync(f.target, 0o600);
+  succeeded(f.run([], { TEST_READY_GPU: "nvidia" }));
+  const s = f.raw().services[service];
+  assert.equal(s.environment.NVIDIA_DRIVER_CAPABILITIES, "compute,video,utility");
+  assert.equal(s.deploy.resources.reservations.devices[0].driver, "nvidia");
+  assert.equal(readFileSync(config, "utf8"), "generation:\n  use_gpu: false\n");
+  assert.equal(f.backups().length, 1);
+  assert.equal(readFileSync(join(f.root, f.backups()[0]), "utf8"), original);
+  assert.equal(statSync(f.target).mode & 0o777, 0o600);
+  assert.equal(statSync(join(f.root, f.backups()[0])).mode & 0o777, 0o600);
+  assert.equal(existsSync(join(f.root, "docker-compose.override.yml")), false);
+  assert.ok(f.state().calls.some((args) => args[0] === "rm" && args.includes("-v")));
+});
+
+test("VAAPI preparation preserves other devices and takes priority over NVIDIA", requiresCompose, (t) => {
+  const f = fixture(t);
+  writeFileSync(f.target, readFileSync(f.target, "utf8") + "    devices:\n      - /dev/fuse:/dev/fuse\n");
+  succeeded(f.run([], { TEST_READY_GPU: "vaapi nvidia" }));
+  const s = f.raw().services[service];
+  assert.deepEqual(s.devices.map((device: any) => device.source).sort(), ["/dev/dri", "/dev/fuse"]);
+  assert.equal(s.deploy, undefined);
+});
+
+test("existing NVIDIA device IDs remain selected during automatic updates", requiresCompose, (t) => {
+  const f = fixture(t);
+  const base = parse(readFileSync(f.target, "utf8"));
+  base.services[service].deploy = { resources: { reservations: { devices: [{ driver: "nvidia", device_ids: ["2"], capabilities: ["gpu"] }] } } };
+  writeFileSync(f.target, JSON.stringify(base));
+  succeeded(f.run([], { TEST_READY_GPU: "vaapi nvidia" }));
+  assert.deepEqual(f.raw().services[service].deploy, base.services[service].deploy);
+});
+
+test("host networking does not gain deliberately omitted ports or mounts", requiresCompose, (t) => {
+  const f = fixture(t);
+  writeFileSync(f.target, "services:\n  video-site-91:\n    image: ghcr.io/nianzhibai/91:stable\n    network_mode: host\n");
+  succeeded(f.run());
+  const s = f.raw().services[service];
+  assert.equal(s.network_mode, "host");
+  assert.equal(s.ports, undefined);
+  assert.equal(s.volumes, undefined);
+});
+
+test("null deployment and environment lists retain their meaning during GPU preparation", requiresCompose, (t) => {
+  const f = fixture(t);
+  writeFileSync(f.target, `services:
+  video-site-91:
+    image: ghcr.io/nianzhibai/91:stable
+    deploy: null
+    environment:
+      - PRIVATE_FROM_HOST
+      - CUSTOM=\${CUSTOM_VALUE:-keep}
+      - LITERAL=$$TOKEN
+`);
+  succeeded(f.run([], { TEST_READY_GPU: "nvidia", PRIVATE_FROM_HOST: "do-not-write-this-secret" }));
+  assert.equal(f.raw().services[service].deploy.resources.reservations.devices[0].driver, "nvidia");
+  const text = readFileSync(f.target, "utf8");
+  assert.match(text, /PRIVATE_FROM_HOST/);
+  assert.match(text, /\$\{CUSTOM_VALUE:-keep\}/);
+  assert.match(text, /\$\$TOKEN/);
+  assert.doesNotMatch(text, /do-not-write-this-secret/);
+});
+
+for (const scenario of ["unavailable GPU", "pull failure", "missing templates", "invalid template", "concurrent edit"] as const) {
+  test(`${scenario} leaves the existing configuration intact`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const before = readFileSync(f.target, "utf8");
+    let args: string[] = [];
+    if (scenario === "unavailable GPU") args = ["--gpu", "nvidia"];
+    if (scenario === "pull failure") f.changeState({ failPull: true });
+    if (scenario === "missing templates") rmSync(join(f.root, "templates/docker-compose.yml"));
+    if (scenario === "invalid template") writeFileSync(join(f.root, "templates/docker-compose.yml"), "services: [bad]\n");
+    if (scenario === "concurrent edit") f.changeState({ changeDuringPull: true });
+    const result = f.run(args);
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(f.target, "utf8"), scenario === "concurrent edit" ? `# concurrent edit\n${before}` : before);
+    assert.deepEqual(f.backups(), []);
+    assert.deepEqual(f.state().starts, []);
+    if (scenario === "missing templates" || scenario === "invalid template") {
+      assert.ok(f.state().calls.some((args) => args[0] === "rm" && args.includes("-v")));
+    }
+  });
+}
+
+for (const failRollback of [false, true]) {
+  test(`startup failure restores original bytes and previous image (rollback fails: ${failRollback})`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const original = readFileSync(f.target, "utf8");
+    f.changeState({ failStart: true, failRollback });
+    const result = f.run([], { TEST_READY_GPU: "nvidia" });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(f.target, "utf8"), original);
+    const starts = f.state().starts;
+    assert.equal(starts.length, 2);
+    assert.equal(starts[0].services[service].image, "ghcr.io/nianzhibai/91:stable");
+    assert.equal(starts[1].services[service].image, oldImage);
+    assert.equal(starts[1].services[service].deploy, undefined);
+    if (failRollback) assert.match(result.stdout, /Container rollback failed/);
+  });
+}
+
+test("default overlay discovery preserves the existing overlay", requiresCompose, (t) => {
+  const f = fixture(t);
+  const overlay = join(f.root, "docker-compose.override.yml");
+  writeFileSync(overlay, "services:\n  video-site-91:\n    ports: !override [\"8181:9191\"]\n    environment:\n      CUSTOM_FROM_OVERLAY: keep\n");
+  const before = readFileSync(overlay, "utf8");
+  succeeded(f.run());
+  assert.equal(f.state().starts[0].services[service].ports[0].published, "8181");
+  assert.equal(f.state().starts[0].services[service].environment.CUSTOM_FROM_OVERLAY, "keep");
+  assert.equal(readFileSync(overlay, "utf8"), before);
+});
+
+test("COMPOSE_FILE from dotenv selects the original files and project name", requiresCompose, (t) => {
+  const f = fixture(t);
+  const alternative = join(f.root, "production.yml");
+  renameSync(f.target, alternative);
+  writeFileSync(join(f.root, ".env"), "COMPOSE_FILE=production.yml\nCOMPOSE_PROJECT_NAME=existing-project\n");
+  succeeded(f.run());
+  assert.equal(existsSync(f.target), false);
+  assert.equal(existsSync(alternative), true);
+  assert.equal(f.state().starts[0].name, "existing-project");
+});
+
+test("GPU conflicts in overlays abort without changing either file", requiresCompose, (t) => {
+  const f = fixture(t);
+  const overlay = join(f.root, "gpu.yml");
+  copyFileSync(join(repository, "docker-compose.gpu-nvidia.yml"), overlay);
+  const original = readFileSync(f.target, "utf8");
+  const overlayOriginal = readFileSync(overlay, "utf8");
+  const result = f.run(["-f", f.target, "-f", overlay, "--gpu", "cpu"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /overlay conflicts/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(readFileSync(overlay, "utf8"), overlayOriginal);
+});
+
+test("explicit image and project name are retained", requiresCompose, (t) => {
+  const f = fixture(t);
+  succeeded(f.run(["--image", "ghcr.io/nianzhibai/91:v9.0.0", "-p", "existing-project"]));
+  assert.equal(f.raw().services[service].image, "ghcr.io/nianzhibai/91:v9.0.0");
+  assert.equal(f.state().starts[0].name, "existing-project");
+});
+
+test("CPU selection removes GPU access and preserves unrelated resources", requiresCompose, (t) => {
+  const f = fixture(t);
+  const base = parse(readFileSync(f.target, "utf8"));
+  Object.assign(base.services[service], {
+    runtime: "nvidia", devices: ["/dev/dri:/dev/dri", "/dev/fuse:/dev/fuse"],
+    environment: { CUSTOM: "keep", NVIDIA_DRIVER_CAPABILITIES: "all" },
+    deploy: { resources: { limits: { memory: "2G" }, reservations: { devices: [
+      { driver: "nvidia", capabilities: ["gpu"] }, { driver: "custom", capabilities: ["custom"] },
+    ] } } },
+  });
+  writeFileSync(f.target, JSON.stringify(base));
+  const before = f.raw().services[service];
+  succeeded(f.run(["--gpu", "cpu"]));
+  const s = f.raw().services[service];
+  assert.equal(s.runtime, undefined);
+  assert.deepEqual(s.devices.map((device: any) => device.source), ["/dev/fuse"]);
+  assert.deepEqual(s.deploy.resources.reservations.devices, before.deploy.resources.reservations.devices.filter((device: any) => device.driver === "custom"));
+  assert.equal(s.deploy.resources.limits.memory, before.deploy.resources.limits.memory);
+  assert.equal(s.environment.CUSTOM, "keep");
+  assert.equal(s.environment.NVIDIA_DRIVER_CAPABILITIES, undefined);
+});
+
+const probeHost = `
+list_render_devices() { if [[ -n "\${TEST_RENDER_DEVICE:-}" ]]; then printf '%s\\n' "$TEST_RENDER_DEVICE"; fi; }
+render_vendor() { printf '%s\\n' "\${TEST_RENDER_VENDOR:-0x8086}"; }
+pci_gpu_vendors() { printf '%s\\n' "\${TEST_PCI_VENDORS:-}"; }
+docker info --format '{{json .}}' > "$TEST_DEPLOYMENT/info.json"
+detect_host_gpu "$TEST_DEPLOYMENT/info.json"
+printf '%s\\n' "\${READY_GPU[@]}" | jq -Rsc 'split("\\n") | map(select(length > 0))'
+`;
+
+test("NVIDIA detection requires a working driver and Docker runtime", requiresCompose, (t) => {
+  const f = fixture(t);
+  let result = f.functions(probeHost, { TEST_NVIDIA_MODE: "ready" });
+  succeeded(result);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), ["nvidia"]);
+  f.changeState({ info: { Runtimes: {}, OperatingSystem: "Debian" } });
+  result = f.functions(probeHost, { TEST_NVIDIA_MODE: "ready" });
+  succeeded(result);
+  assert.match(result.stdout, /Container Toolkit/);
+  assert.match(result.stdout, /\[\]\s*$/);
+});
+
+test("driver timeout and missing PCI GPU prerequisites produce actionable notes", requiresCompose, (t) => {
+  const f = fixture(t);
+  const result = f.functions(probeHost, { TEST_NVIDIA_MODE: "timeout", TEST_PCI_VENDORS: "0x10de\n0x8086" });
+  succeeded(result);
+  assert.match(result.stdout, /kernel driver/);
+  assert.match(result.stdout, /failed or timed out/);
+  assert.match(result.stdout, /\[\]\s*$/);
+});
+
+test("VAAPI detection checks vendor and rootless device access", requiresCompose, (t) => {
+  const f = fixture(t);
+  let result = f.functions(probeHost, { TEST_RENDER_DEVICE: "/missing-render-device" });
+  succeeded(result);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), ["vaapi"], "Rootful Docker uses daemon device permissions");
+  f.changeState({ info: { Runtimes: {}, OperatingSystem: "Debian", SecurityOptions: ["name=rootless"] } });
+  result = f.functions(probeHost, { TEST_RENDER_DEVICE: "/missing-render-device" });
+  succeeded(result);
+  assert.match(result.stdout, /render\/video group/);
+  assert.match(result.stdout, /\[\]\s*$/);
+  result = f.functions(probeHost, { TEST_RENDER_DEVICE: "/missing-render-device", TEST_RENDER_VENDOR: "0x10de" });
+  succeeded(result);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), []);
+});
+
+test("automatic GPU detection rejects remote Docker hosts", requiresCompose, (t) => {
+  const f = fixture(t);
+  const result = f.functions(probeHost, { DOCKER_HOST: "ssh://example.test" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /local Linux Docker Engine/);
+});
+
+test("automatic update retains CPU access when GPU prerequisites are missing", requiresCompose, (t) => {
+  const f = fixture(t);
+  const program = `source "$1"
+list_render_devices() { :; }
+pci_gpu_vendors() { printf '0x10de\\n'; }
+main`;
+  const result = spawnSync("bash", ["-c", program, "bash", script], { cwd: f.root, env: f.env, encoding: "utf8", timeout: 30_000 });
+  succeeded(result);
+  assert.match(result.stdout, /check the host driver/);
+  assert.equal(f.raw().services[service].deploy, undefined);
+});

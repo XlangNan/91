@@ -35,6 +35,77 @@ docker compose -f docker-compose.yml -f docker-compose.gpu-nvidia.yml up -d
 
 GPU 主机可执行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -run TestHardwareRealFFmpeg -v`，验证生产使用的封面与预览滤镜链。普通测试环境缺少 GPU 时跳过该实机测试。
 
+## Docker 部署与更新
+
+仓库根目录的 `91-docker.sh` 同时支持首次部署和已有部署的更新，使用系统已安装的 Docker/Compose。需要 Bash、Docker 访问权限和常规 Linux 工具（包括 `flock`、`timeout`、GNU coreutils），Docker Compose 需支持 `config --no-env-resolution`、`--no-normalize` 等选项；缺少 Docker/Compose 或 Compose 版本过旧时会提示并退出。YAML 由 Compose 解析和生成，JSON 合并由宿主机上的 jq 完成，无需 Python。
+
+缺少 jq 时，脚本会自动选择可用的 `apt-get`、`dnf`、`yum`、`apk`、`zypper` 或 `pacman` 安装。root 用户直接安装，其他用户仅对包管理命令使用 sudo，可能需要输入 sudo 密码；更新过程仍以原用户身份执行。已有 jq 时跳过安装。安装失败、权限不足、没有支持的包管理器，或安装后仍无法运行 jq 时退出，此时尚未修改部署配置或更新容器。
+
+首次部署可在空目录执行，无需预先下载 Compose 文件。脚本会从目标镜像读取模板，在本目录创建 `docker-compose.yml` 并启动服务，默认访问端口为 9191，数据挂载到本目录的 `./data`：
+
+```bash
+mkdir -p video-site-91
+cd video-site-91
+curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/91-docker.sh -o 91-docker.sh
+bash 91-docker.sh install
+```
+
+首次部署需要自定义端口或数据目录时，安装命令可改为 `bash 91-docker.sh install --port 8080 --data-dir /srv/video-site-91/data`。这两个选项仅用于首次部署；后续变更请编辑已有 Compose 配置。也可以用 `--image` 指定首次部署的镜像版本。
+
+已有部署在原 Compose 目录下载同一个脚本并执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/91-docker.sh -o 91-docker.sh
+bash 91-docker.sh update
+
+# 可选：保留现有设备配置、改用 CPU，或明确选择显卡类型
+bash 91-docker.sh update --gpu keep
+bash 91-docker.sh update --gpu cpu
+bash 91-docker.sh update --gpu nvidia
+bash 91-docker.sh update --gpu vaapi
+
+# 原部署使用固定版本、自定义项目名或多个配置文件时
+bash 91-docker.sh update --image ghcr.io/nianzhibai/91:vX.Y.Z
+bash 91-docker.sh update --project-name my-project -f docker-compose.yml -f custom.yml
+```
+
+重置密码使用运行中的网站容器，沿用服务端的用户选择、随机密码生成和旧会话撤销逻辑：
+
+```bash
+# 列出已有用户，交互选择要重置的用户 ID
+bash 91-docker.sh reset-password
+
+# 指定已有用户；自定义 Compose 文件和项目名仍可通过 -f / -p 传入
+bash 91-docker.sh reset-password --user-id 1
+bash 91-docker.sh -f production.yml -p my-project reset-password --user-id 1
+```
+
+服务端会生成并在终端显示新的 12 位随机密码。重置要求已有 Compose 配置和运行中的网站容器，直接执行容器内 `/opt/video-site-91/server reset-password`；无需 jq，不安装依赖、不拉取镜像、不重建容器或改写 Compose。可用 `--config` 指定容器内已有的服务端配置路径；默认沿用容器的 `VIDEO_CONFIG` 和工作目录。重置参数不能与安装、更新或 GPU/TG 配置参数混用，执行错误按原退出码返回。
+
+默认的新部署不包含 TG Bot API。启用 TG 部署时执行 `bash 91-docker.sh install --telegram enable`，已有部署执行：
+
+```bash
+bash 91-docker.sh update --telegram enable
+```
+
+脚本读取已有 Bot API 服务的 `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`；缺少或格式无效时，交互提示输入并校验，API ID 和 API Hash 均明文显示。API ID 为正整数，API Hash 为 32 位十六进制字符串，这两个值从 `my.telegram.org` 获取；已有有效参数直接复用。非交互环境可通过同名环境变量提供，缺失时退出。环境变量也可显式覆盖旧值。Bot Token、接收开关和允许的用户 ID 仍在网站后台配置，脚本不会修改应用的 `config.yaml`。
+
+脚本从目标镜像读取 TG 模板，将 Bot API 服务、网站依赖、共享目录及当前主 Compose 文件的只读挂载写入主文件；拉取 Bot API 镜像并重建网站容器。已有 TG 配置的普通更新也会重建网站容器，使原子替换后的 Compose 文件挂载生效。默认 Bot API 在服务网络内监听 7878，不新增宿主机端口映射。主数据目录为 bind 挂载时，TG 数据默认放在其 `telegram` 子目录；主数据目录为命名卷时，默认创建独立的 `91-telegram-data` 卷。已有 Bot API 镜像、端口和共享目录保留。TG 服务需与网站共享 Compose 网络；主文件中的挂载路径需使用明确路径，不支持变量，自定义 Bot API `command` / `entrypoint` 或 `network_mode` 时需先按项目 TG 部署约定调整。覆盖文件与 TG 连接或存储设置冲突时退出，不覆盖原文件。
+
+启用 TG 后，主 Compose 文件可能包含 API 凭据，权限设为 600。TG 共享目录会写为一致的明确源路径，已有相对路径可能转为绝对路径，仍指向同一份数据。再次执行普通 `update` 或 `--telegram keep` 会保留 TG 部署；不会恢复为默认关闭状态。更新失败会恢复原配置和已有服务镜像；本次新增的 Bot API 容器会被移除，持久数据保留。首次部署失败仍保留配置和数据以便排查。
+
+不传 `install` / `update` 时，脚本会根据主 Compose 文件是否存在自动判断。显式 `install` 拒绝覆盖已有配置，显式 `update` 要求已有配置。默认识别 Compose 环境变量和本目录的标准文件名；可用 `-f` 指定首次生成的文件名及已有覆盖文件。首次部署发现同项目已有服务容器时会退出，要求恢复原部署配置后再更新。
+
+首次部署默认使用 `ghcr.io/nianzhibai/91:stable`，更新默认跟随现有服务的镜像引用；固定旧版本号时需用 `--image` 指定目标版本。脚本先拉取目标镜像，再创建一个不启动的临时容器读取配套部署模板，避免使用 `main` 分支配置搭配旧镜像；临时容器会在退出时删除，配置处理全程在宿主机执行。**需先发布包含更新后的 Dockerfile 和部署模板的镜像**；旧镜像没有模板时会退出并保留原配置。
+
+默认在本机 Linux Docker Engine 上检测 GPU：Intel/AMD 需要可用的 `/dev/dri/renderD*` 设备；NVIDIA 需要正常的驱动和已配置的 Docker NVIDIA 运行时。检测到硬件但依赖不齐会提示缺项，原本使用 CPU 的部署继续按 CPU 更新；已有 GPU 配置但环境不再满足条件时退出，避免重建出无法启动的容器。已有 GPU 选择和设备编号保持不变，新部署同时具备两种后端时优先 VAAPI，可用参数覆盖。远程 Docker 或 Docker Desktop 使用 `--gpu keep`；驱动和 Toolkit 仍由宿主机管理员安装。
+
+脚本将需要新增的 GPU 配置直接写入原 Compose 文件，用户不必再下载 GPU 附加文件。它保留已有字段值、端口、数据挂载、环境变量引用、服务 `env_file`、其他服务和资源，新模板只补充缺失的默认配置。配置会经 Compose 重新序列化，注释、锚点和排版不保留；刻意省略的端口、挂载等本机部署字段不会被模板重新添加。默认加载的覆盖文件及 `COMPOSE_FILE` 也会保留使用；自定义 `-f` 文件需要按原顺序传入，GPU 或镜像选择与覆盖文件冲突时会退出而不覆盖文件。
+
+写入前会校验最终配置。更新时在同目录保留带时间戳的 `.bak-*` 原文件并原子替换；首次部署原子创建主文件，检测到其他进程刚刚创建的文件时退出，不覆盖它。`up --wait` 检查容器启动，更新启动失败会恢复原配置，并尝试用更新前的实际镜像 ID 恢复容器；首次部署启动失败则保留生成的配置和数据，便于排查，修复后可执行 `update` 或不带动作重试。容器没有健康检查时，`--wait` 仅确认容器运行，不等同于业务可用性检查。恢复不回滚数据库或应用数据；备份文件可能包含原配置中的敏感值，应与原配置一样保管。
+
+脚本不读取或修改应用的 `config.yaml`，不会自动打开 GPU 开关。更新成功后，在管理后台检测并开启「GPU 硬件加速」。自动写入的 GPU 配置会保留在主 Compose 文件中，之后普通镜像升级仍可使用 `docker compose pull && docker compose up -d`；需要同步新版部署模板时再次运行更新脚本。
+
 ## 目录
 
 仓库根目录是前端（Vite + React），`backend/` 是本文档描述的 Go 服务：
@@ -383,7 +454,7 @@ flowchart LR
 
 管理员凭据仅存储在 SQLite 的 `users` 表，密码保存为 bcrypt 哈希；`config.yaml` 不再支持 `server.admin`。首次设置只写数据库，初始化标记和账号在同一事务中保存，删除或封禁管理员不会重新开放首次设置。升级时，只有尚未初始化且没有用户的数据库会导入旧配置中的非默认管理员凭据；已有数据库账号和密码始终优先，迁移成功后自动移除旧配置字段。旧版不关联用户的登录会话会失效，需要重新登录。
 
-忘记密码时可在线执行 `server reset-password`，选择已有用户 ID；也可用 `server reset-password --user-id 1` 指定目标。一键安装对应 `sudo 91 reset-password`，Docker 对应 `docker exec -it video-site-91 /opt/video-site-91/server reset-password`。必须使用包含该子命令的新版服务端；命令不停止或重启服务。
+忘记密码时可在线执行 `server reset-password`，选择已有用户 ID；也可用 `server reset-password --user-id 1` 指定目标。一键安装对应 `sudo 91 reset-password`，Docker 可在部署目录执行 `bash 91-docker.sh reset-password`，或直接执行 `docker exec -it video-site-91 /opt/video-site-91/server reset-password`。必须使用包含该子命令的新版服务端；命令不停止或重启服务。
 
 重置命令使用安全随机源生成固定 12 位密码，保证同时包含大写字母、小写字母和数字；数据库提交成功后才在终端显示，数据库只存 bcrypt 哈希。改密和撤销目标用户所有旧会话在同一事务中完成，不创建账号、不修改角色或账号封禁、不解除 IP 封禁或清除失败计数。登录后仍可在后台手动修改密码，不强制二次改密。
 

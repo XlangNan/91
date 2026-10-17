@@ -58,6 +58,7 @@ COPY --from=backend /out/server ./server
 COPY --from=frontend /app/dist ./dist
 COPY backend/config.example.yaml ./config.example.yaml
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY docker-compose.yml docker-compose.gpu-nvidia.yml docker-compose.gpu-vaapi.yml tg-docker-compose.yml /usr/local/share/video-site-91/deploy/
 
 ARG VERSION=dev
 

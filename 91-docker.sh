@@ -1,0 +1,794 @@
+#!/usr/bin/env bash
+# jq expressions use single quotes intentionally; jq variables use --arg.
+# shellcheck disable=SC2016
+set -Eeuo pipefail
+
+SERVICE="video-site-91"
+DEFAULT_IMAGE="ghcr.io/nianzhibai/91:stable"
+TEMPLATE_DIR="/usr/local/share/video-site-91/deploy"
+# Individual files can reference services/resources supplied by overlays. The
+# complete candidate is checked for consistency after the files are combined.
+RAW_OPTIONS=(--no-interpolate --no-path-resolution --no-normalize --no-env-resolution --no-consistency)
+COMPOSE_FILES=()
+PROJECT_OPTIONS=()
+READY_GPU=()
+ACTION="auto"
+RESET_ARGS=()
+DEPLOYMENT_OPTIONS=()
+GPU_MODE="auto"
+TELEGRAM_MODE="keep"
+TELEGRAM_SERVICE="telegram-bot-api"
+OLD_TELEGRAM_IMAGE=""
+TELEGRAM_WAS_RUNNING=false
+TELEGRAM_ADDED=false
+FORCE_RECREATE=false
+RESTORING_DEPLOYMENT=false
+PROJECT_NAME=""
+REQUESTED_IMAGE=""
+INSTALL_PORT=""
+INSTALL_DATA_DIR=""
+WAIT_TIMEOUT=90
+WORK_DIR=""
+TARGET=""
+OLD_IMAGE=""
+TEMPLATE_CONTAINER=""
+NEEDS_ROLLBACK=false
+
+# Keep JSON manipulation in one jq library. Shell values are passed with --arg;
+# Compose parses YAML and preserves interpolation, env_file and relative paths.
+JQ_LIBRARY=$(cat <<'JQ'
+def environment_map:
+  (. // {}) | if type == "array" then
+    reduce .[] as $entry ({};
+      ($entry | index("=")) as $index |
+      if $index == null then .[$entry] = null
+      else .[$entry[0:$index]] = $entry[$index + 1:] end)
+  else . end;
+
+def normalize_environment:
+  .services[$service].environment |= environment_map;
+
+def device_source:
+  if type == "object" then (.source // "") else split(":")[0] end;
+
+def is_dri: . == "/dev/dri" or startswith("/dev/dri/");
+
+def gpu_modes:
+  [if ((.gpus // [] | length) > 0 or .runtime == "nvidia" or
+       any((.deploy.resources.reservations.devices // [])[]; .driver == "nvidia"))
+   then "nvidia" else empty end,
+   if any((.devices // [])[]; device_source | is_dri)
+   then "vaapi" else empty end];
+
+def remove_gpu:
+  del(.gpus) |
+  (if .runtime == "nvidia" then del(.runtime) else . end) |
+  (if has("devices") then .devices |= map(select(device_source | is_dri | not)) else . end) |
+  (if .deploy.resources.reservations.devices != null then
+     .deploy.resources.reservations.devices |= map(select(.driver != "nvidia"))
+   else . end) |
+  .environment |= (environment_map | del(.NVIDIA_DRIVER_CAPABILITIES, .NVIDIA_VISIBLE_DEVICES));
+
+def merge_deployment($template; $local):
+  if ($template.services | has($service)) and ($local.services | has($service)) then
+    ($template | normalize_environment) as $base |
+    ($local | normalize_environment) as $existing |
+    # Missing local ports/mounts can be intentional, e.g. network_mode: host.
+    reduce ["ports", "expose", "volumes", "devices", "gpus", "runtime", "env_file",
+            "container_name", "networks", "network_mode", "build", "profiles"][] as $key
+      ($base * $existing;
+       if ($existing.services[$service] | has($key)) then .
+       else del(.services[$service][$key]) end)
+  else error("Both deployment files must contain service " + $service) end;
+
+def installation_settings($port; $directory):
+  (if $port != "" then
+     if any(.services[$service].ports[]; .target == 9191) then
+       .services[$service].ports |= map(if .target == 9191 then .published = $port else . end)
+     else error("The deployment template has no port mapping for 9191") end
+   else . end) |
+  if $directory != "" then
+    if any(.services[$service].volumes[]; .target == "/opt/video-site-91/data" and .type == "bind") then
+      .services[$service].volumes |= map(
+        if .target == "/opt/video-site-91/data" then .source = $directory else . end)
+    else error("The deployment template has no application data bind mount") end
+  else . end;
+
+def configure_telegram($template; $effective; $credentials; $compose):
+  "telegram-bot-api" as $bot |
+  "/var/lib/telegram-bot-api" as $root |
+  ($template.services[$bot] | .environment |= environment_map) as $defaults |
+  ((.services[$bot] // $effective.services[$bot] // {}) | .environment |= environment_map) as $existing |
+  .services[$bot] = ($defaults * $existing) |
+  .services[$bot].environment.TELEGRAM_API_ID = $credentials.api_id |
+  .services[$bot].environment.TELEGRAM_API_HASH = $credentials.api_hash |
+  .services[$bot].environment.TELEGRAM_LOCAL = "1" |
+  del(.services[$bot].profiles) |
+  (($effective.services[$bot].volumes // []) | map(select(.target == $root))) as $old_storage |
+  (if ($old_storage | length) > 1 then error("Telegram needs one writable data mount")
+   elif ($old_storage | length) == 1 then $old_storage[0]
+   else
+     ([$effective.services[$service].volumes[]? | select(.target == "/opt/video-site-91/data")][0]) as $data |
+     if $data.type == "bind" then
+       {type: "bind", source: (($data.source | rtrimstr("/")) + "/telegram"), target: $root,
+        bind: {create_host_path: true}}
+     else {type: "volume", source: "91-telegram-data", target: $root} end
+   end) as $storage |
+  if $storage.read_only == true then error("Telegram data must be writable") else . end |
+  # Use the same concrete source in both namespaces. Relative paths in the
+  # mounted metadata file resolve inside the website, not on the Docker host.
+  .services[$bot].volumes =
+    ([.services[$bot].volumes[]? | select(.target != $root)] + [$storage]) |
+  if ($old_storage | length) == 0 then
+    if $storage.type == "volume" then .volumes[$storage.source] //= {} else . end
+  else . end |
+  ([$effective.services[$service].volumes[]? |
+    select(.source == $storage.source and .type == $storage.type)]) as $peers |
+  if ($peers | length) > 1 then error("Website has ambiguous Telegram shared mounts")
+  elif ($peers | length) == 0 then
+    if any(.services[$service].volumes[]?; .target == $root) then
+      error("Website Telegram mount points to different storage; fix it before enabling Telegram")
+    else .services[$service].volumes = ((.services[$service].volumes // []) + [$storage]) end
+  elif $peers[0].read_only == true then error("Website Telegram data must be writable")
+  else
+    .services[$service].volumes =
+      ([.services[$service].volumes[]? | select(.target != $peers[0].target)] + [$peers[0]])
+  end |
+  .services[$service].environment |= environment_map |
+  (.services[$service].environment.VIDEO_TELEGRAM_COMPOSE //
+   ($template.services[$service].environment | environment_map | .VIDEO_TELEGRAM_COMPOSE)) as $config |
+  .services[$service].environment.VIDEO_TELEGRAM_COMPOSE = $config |
+  ([.services[$service].volumes[]? | select(.target == $config)][0] // {}) as $mount |
+  .services[$service].volumes =
+    ([.services[$service].volumes[]? | select(.target != $config)] +
+     [($mount * {type: "bind", source: $compose, target: $config, read_only: true} |
+       del(.volume) | .bind = ((.bind // {}) * {create_host_path: false}))]) |
+  (.services[$service].depends_on // {}) as $dependencies |
+  .services[$service].depends_on =
+    (if ($dependencies | type) == "array" then
+       reduce $dependencies[] as $name ({}; .[$name] = {condition: "service_started", required: true})
+     else $dependencies end) |
+  .services[$service].depends_on[$bot] //= {condition: "service_started", required: true} |
+  (($effective.services[$service].networks // {default: null}) | keys) as $site_networks |
+  (($effective.services[$bot].networks // {default: null}) | keys) as $bot_networks |
+  if (($site_networks - $bot_networks) | length) == ($site_networks | length) then
+    .services[$bot].networks[$site_networks[0]] = null
+  else . end;
+
+def telegram_shape:
+  "telegram-bot-api" as $bot |
+  "/var/lib/telegram-bot-api" as $root |
+  (.services[$bot].volumes | map(select(.target == $root))[0]) as $storage |
+  (.services[$service].environment.VIDEO_TELEGRAM_COMPOSE) as $config |
+  {config: $config,
+   shared: [.services[$service].volumes[]? |
+     select((.source == $storage.source and .type == $storage.type) or .target == $config)],
+   storage: [.services[$bot].volumes[]? | select(.target == $root or (.target | startswith($root + "/")))],
+   port: (.services[$bot].environment.TELEGRAM_HTTP_PORT),
+   local: (.services[$bot].environment.TELEGRAM_LOCAL)};
+
+def validate_telegram:
+  "telegram-bot-api" as $bot |
+  "/var/lib/telegram-bot-api" as $root |
+  ([.services[$bot].volumes[]? | select(.target == $root)][0]) as $storage |
+  ([.services[$service].volumes[]? |
+    select(.source == $storage.source and .type == $storage.type)][0].target) as $shared |
+  if ((.services[$service].network_mode // "") != "" or
+      (.services[$bot].network_mode // "") != "") then
+    error("Telegram needs the Compose service network; remove network_mode first")
+  elif .services[$bot].command != null or .services[$bot].entrypoint != null then
+    error("Telegram Bot API uses TELEGRAM_HTTP_PORT; custom command/entrypoint is unsupported")
+  elif any((.services[$service].volumes + .services[$bot].volumes)[];
+      ((.source // "") | length == 0) or ((.source // "") | contains("$")) or (.target | contains("$"))) then
+    error("Telegram deployment requires explicit mount paths without variables")
+  elif $shared == null then error("Website and Bot API must share the same Telegram storage")
+  elif any(.services[$bot].volumes[]?; .target | startswith($root + "/")) or
+       any(.services[$service].volumes[]?; .target | startswith($shared + "/")) then
+    error("Telegram shared data cannot have independent child mounts")
+  elif ((.services[$service].environment.VIDEO_TELEGRAM_COMPOSE | startswith("/")) | not) then
+    error("VIDEO_TELEGRAM_COMPOSE must be an absolute container path")
+  elif ((.services[$bot].environment | environment_map | .TELEGRAM_HTTP_PORT |
+          tostring | test("^[0-9]+$") | not)) or
+       ((.services[$bot].environment | environment_map | .TELEGRAM_HTTP_PORT |
+          tonumber? // 0) as $port | $port < 1 or $port > 65535) then
+    error("Telegram Bot API needs a valid TELEGRAM_HTTP_PORT")
+  else . end;
+
+def configure_gpu($mode; $template):
+  .services[$service] |= (
+    if $mode == "keep" then .
+    elif $mode == "cpu" then remove_gpu
+    else
+      (if ((gpu_modes - [$mode]) | length) > 0 then remove_gpu else . end) |
+      (if (gpu_modes | index($mode)) == null then
+         if $mode == "vaapi" then
+           .devices = ((.devices // []) + $template.services[$service].devices)
+         else
+           .deploy.resources.reservations.devices =
+             ((.deploy.resources.reservations.devices // []) +
+              $template.services[$service].deploy.resources.reservations.devices)
+         end
+       else . end) |
+      if $mode == "nvidia" then
+        .environment |= environment_map |
+        (.environment.NVIDIA_DRIVER_CAPABILITIES // "") as $capabilities |
+        if ($capabilities | contains("$")) then
+          error("NVIDIA_DRIVER_CAPABILITIES uses interpolation; include compute,video,utility there and use --gpu keep")
+        else
+          ($capabilities | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $values |
+          if ($values | index("all")) != null then .
+          else
+            ($template.services[$service].environment | environment_map |
+             .NVIDIA_DRIVER_CAPABILITIES | split(",")) as $required |
+            .environment.NVIDIA_DRIVER_CAPABILITIES =
+              (reduce $required[] as $value ($values;
+                 if index($value) == null then . + [$value] else . end) | join(","))
+          end
+        end
+      else . end
+    end);
+JQ
+)
+
+log() { printf '[docker-update] %s\n' "$*"; }
+die() { printf '[docker-update] %s\n' "$*" >&2; exit 1; }
+
+ensure_jq() {
+  if command -v jq >/dev/null 2>&1; then return; fi
+
+  local manager package_manager=""
+  local -a privilege=() install_command=()
+  for manager in apt-get dnf yum apk zypper pacman; do
+    if command -v "$manager" >/dev/null 2>&1; then
+      package_manager="$manager"
+      break
+    fi
+  done
+  [[ -n "$package_manager" ]] || die "jq is missing and no supported package manager was found; install jq manually"
+  if [[ "$(id -u)" != 0 ]]; then
+    command -v sudo >/dev/null 2>&1 || die "Installing jq requires root privileges; run with sudo or install jq manually"
+    privilege=(sudo)
+  fi
+
+  log "jq is missing; installing it automatically with $package_manager"
+  case "$package_manager" in
+    apt-get)
+      "${privilege[@]}" env DEBIAN_FRONTEND=noninteractive apt-get update || die "Could not refresh package lists for jq installation"
+      install_command=(env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq)
+      ;;
+    dnf|yum) install_command=("$package_manager" install -y jq) ;;
+    apk) install_command=(apk add --no-cache jq) ;;
+    zypper) install_command=(zypper --non-interactive install jq) ;;
+    pacman) install_command=(pacman -S --needed --noconfirm jq) ;;
+  esac
+  "${privilege[@]}" "${install_command[@]}" || die "Automatic jq installation failed; fix the package manager error and retry"
+  hash -r
+  if ! command -v jq >/dev/null 2>&1 || ! jq --version >/dev/null 2>&1; then
+    die "The package manager finished but jq is still unavailable; install jq manually"
+  fi
+  log "jq installed successfully"
+}
+
+json() {
+  local -a options=()
+  while (( $# > 1 )); do options+=("$1"); shift; done
+  jq --arg service "$SERVICE" "${options[@]}" "$JQ_LIBRARY"$'\n'"$1"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: bash 91-docker.sh [install|update|reset-password] [options]
+
+Install or update a Compose deployment and prepare container GPU access.
+Without an action, install if no Compose file exists; otherwise update it.
+The application's GPU switch is never changed.
+
+  install                 First deployment; refuse to overwrite existing config
+  update                  Update an existing deployment; require existing config
+  reset-password          Reset an existing user's password in the running website
+  -f, --file FILE          Compose files in order; create/update the first
+  -p, --project-name NAME  Existing project name, if originally started with -p
+      --image IMAGE       Target image (new: stable; existing: current reference)
+      --port PORT         First deployment only: host port (default: 9191)
+      --data-dir PATH     First deployment only: data directory (default: ./data)
+      --gpu MODE          auto (default), keep, cpu, nvidia, or vaapi
+      --telegram MODE     keep (default) or enable; deploy the local Bot API
+      --wait-timeout N    Container startup timeout in seconds (default: 90)
+  -h, --help              Show this help
+
+Password reset options:
+      --user-id ID        Existing user ID (omit to select interactively)
+      --config PATH       Server configuration path inside the container
+The website must already be running. Reset uses the existing server's random
+password generator and does not require jq or deployment dependency installation.
+
+Install/update requirements: Bash, Docker Compose and standard Linux utilities, including
+flock and timeout. Missing jq is installed with apt-get, dnf, yum, apk, zypper or
+pacman, using root privileges or sudo. Run from the deployment directory.
+Enabling Telegram prompts for missing API ID and API Hash with visible input.
+TELEGRAM_API_ID / TELEGRAM_API_HASH may also be supplied through the environment.
+Configure the Bot Token and receiving switch in the website administration panel.
+EOF
+}
+
+parse_args() {
+  while (( $# )); do
+    case "$1" in
+      -h|--help) usage; exit 0 ;;
+      install|update|reset-password)
+        [[ "$ACTION" == auto ]] || die "Specify only one action: install, update or reset-password"
+        ACTION="$1"
+        shift
+        ;;
+      --user-id|--config)
+        if (( $# < 2 )) || [[ -z "${2:-}" ]]; then die "Missing value for $1"; fi
+        RESET_ARGS+=("$1" "$2")
+        shift 2
+        ;;
+      --user-id=*|--config=*) RESET_ARGS+=("$1"); shift ;;
+      -f|--file|-p|--project-name|--image|--gpu|--telegram|--wait-timeout|--port|--data-dir)
+        if (( $# < 2 )) || [[ -z "${2:-}" ]]; then die "Missing value for $1"; fi
+        case "$1" in
+          -f|--file) COMPOSE_FILES+=("$2") ;;
+          -p|--project-name) PROJECT_NAME="$2" ;;
+          --image) REQUESTED_IMAGE="$2" ;;
+          --port) INSTALL_PORT="$2" ;;
+          --data-dir) INSTALL_DATA_DIR="$2" ;;
+          --gpu) GPU_MODE="$2" ;;
+          --telegram) TELEGRAM_MODE="$2" ;;
+          --wait-timeout) WAIT_TIMEOUT="$2" ;;
+        esac
+        case "$1" in -f|--file|-p|--project-name) ;; *) DEPLOYMENT_OPTIONS+=("$1") ;; esac
+        shift 2
+        ;;
+      *) die "Unknown option: $1 (see --help)" ;;
+    esac
+  done
+  if [[ "$ACTION" == reset-password ]]; then
+    (( ${#DEPLOYMENT_OPTIONS[@]} == 0 )) || die "Deployment options cannot be combined with reset-password"
+  elif (( ${#RESET_ARGS[@]} )); then
+    die "--user-id and --config require the reset-password action"
+  fi
+  case "$GPU_MODE" in auto|keep|cpu|nvidia|vaapi) ;; *) die "Unknown GPU mode: $GPU_MODE" ;; esac
+  case "$TELEGRAM_MODE" in keep|enable) ;; *) die "Unknown Telegram mode: $TELEGRAM_MODE" ;; esac
+  [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--wait-timeout must be positive"
+  if [[ -n "$INSTALL_PORT" ]]; then
+    [[ "$INSTALL_PORT" =~ ^[0-9]{1,5}$ ]] || die "--port must be between 1 and 65535"
+    (( 10#$INSTALL_PORT >= 1 && 10#$INSTALL_PORT <= 65535 )) || die "--port must be between 1 and 65535"
+    INSTALL_PORT="$((10#$INSTALL_PORT))"
+  fi
+}
+
+compose_with() {
+  local -a options=()
+  while [[ "$1" != -- ]]; do
+    options+=(-f "$1")
+    shift
+  done
+  shift
+  docker compose "${PROJECT_OPTIONS[@]}" "${options[@]}" "$@"
+}
+
+compose() { compose_with "${COMPOSE_FILES[@]}" -- "$@"; }
+
+reset_password() {
+  local -a options=()
+  # Compose allocates a TTY by default. Preserve piped input and automation too.
+  if [[ ! -t 0 || ! -t 1 ]]; then options+=(-T); fi
+  compose exec "${options[@]}" "$SERVICE" /opt/video-site-91/server reset-password "$@"
+}
+
+raw_json() { compose_with "$@" -- config --format json "${RAW_OPTIONS[@]}"; }
+start_with() {
+  local -a options=()
+  if [[ "$TELEGRAM_MODE" == enable || "$FORCE_RECREATE" == true ]]; then options+=(--force-recreate); fi
+  if [[ "$RESTORING_DEPLOYMENT" == true && "$TELEGRAM_MODE" == enable && "$TELEGRAM_WAS_RUNNING" != true ]]; then
+    options+=(--no-deps)
+  fi
+  compose_with "$@" -- up -d --no-build --pull never --wait --wait-timeout "$WAIT_TIMEOUT" "${options[@]}" "$SERVICE"
+}
+
+telegram_parameter() {
+  local name="$1" pattern="$2" value="$3" description="$4"
+  while [[ ! "$value" =~ $pattern ]]; do
+    [[ -t 0 ]] || die "$name is missing or invalid; set it in the environment or run interactively"
+    printf '%s (%s): ' "$name" "$description" >&2
+    IFS= read -r value || die "Telegram setup cancelled before deployment changes"
+  done
+  printf '%s' "$value"
+}
+
+telegram_credentials() {
+  local api_id api_hash
+  api_id=$(json -r '.services["telegram-bot-api"].environment.TELEGRAM_API_ID // ""' < "$1")
+  api_hash=$(json -r '.services["telegram-bot-api"].environment.TELEGRAM_API_HASH // ""' < "$1")
+  api_id=$(telegram_parameter TELEGRAM_API_ID '^[1-9][0-9]*$' "${TELEGRAM_API_ID:-$api_id}" 'positive integer from my.telegram.org')
+  api_hash=$(telegram_parameter TELEGRAM_API_HASH '^[a-fA-F0-9]{32}$' "${TELEGRAM_API_HASH:-$api_hash}" '32 hexadecimal characters from my.telegram.org')
+  # Keep credentials off command arguments. Both terminal inputs remain visible.
+  printf '%s\000%s' "$api_id" "$api_hash" | json -Rs '
+    split("\u0000") | {api_id: .[0], api_hash: .[1]}
+  ' > "$WORK_DIR/telegram-credentials.json"
+}
+
+prepare_telegram() {
+  local -a files=("$WORK_DIR/proposed.json" "${COMPOSE_FILES[@]:1}")
+  if ! docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/tg-docker-compose.yml" "$WORK_DIR/tg-docker-compose.yml"; then
+    die "The image has no Telegram deployment template; publish an image with the updated Dockerfile first"
+  fi
+  raw_json "$WORK_DIR/tg-docker-compose.yml" > "$WORK_DIR/telegram-template.json"
+  compose_with "${files[@]}" -- config --format json > "$WORK_DIR/telegram-before.json"
+  telegram_credentials "$WORK_DIR/telegram-before.json"
+  json --slurpfile template "$WORK_DIR/telegram-template.json" \
+    --slurpfile effective "$WORK_DIR/telegram-before.json" \
+    --slurpfile credentials "$WORK_DIR/telegram-credentials.json" --arg compose "$TARGET" '
+      configure_telegram($template[0]; $effective[0]; $credentials[0]; $compose) |
+      validate_telegram
+    ' < "$WORK_DIR/proposed.json" > "$WORK_DIR/telegram-proposed.json"
+  mv -- "$WORK_DIR/telegram-proposed.json" "$WORK_DIR/proposed.json"
+}
+
+validate_and_pull_telegram() {
+  local container_ids running_ids container image previous_id
+  local -a files=("$WORK_DIR/candidate.yml" "${COMPOSE_FILES[@]:1}")
+  raw_json "$WORK_DIR/candidate.yml" > "$WORK_DIR/telegram-raw.json"
+  json -e 'validate_telegram | true' < "$WORK_DIR/telegram-raw.json" >/dev/null
+  compose_with "$WORK_DIR/candidate.yml" -- config --no-consistency --format json > "$WORK_DIR/telegram-base.json"
+  json -e --slurpfile base "$WORK_DIR/telegram-base.json" \
+    --slurpfile credentials "$WORK_DIR/telegram-credentials.json" '
+      validate_telegram |
+      (telegram_shape == ($base[0] | telegram_shape)) and
+      (.services["telegram-bot-api"].environment.TELEGRAM_API_ID == $credentials[0].api_id) and
+      (.services["telegram-bot-api"].environment.TELEGRAM_API_HASH == $credentials[0].api_hash) and
+      ((.services["telegram-bot-api"].profiles // []) | length == 0) and
+      (.services[$service].depends_on | has("telegram-bot-api")) and
+      ((.services[$service].networks | keys) - (.services["telegram-bot-api"].networks | keys) | length) <
+        (.services[$service].networks | keys | length)
+    ' < "$WORK_DIR/resolved.json" >/dev/null ||
+    die "An overlay conflicts with the Telegram deployment; put its Telegram connection and storage settings in the main Compose file"
+
+  container_ids=$(compose_with "${files[@]}" -- ps -a -q "$TELEGRAM_SERVICE")
+  if [[ "$ACTION" == install ]] || ! json -e '.services | has("telegram-bot-api")' < "$WORK_DIR/effective.json" >/dev/null; then
+    [[ -z "$container_ids" ]] || die "Existing Telegram containers have no original configuration here; restore their Compose configuration first"
+    TELEGRAM_ADDED=true
+  else
+    running_ids=$(compose_with "${files[@]}" -- ps -q "$TELEGRAM_SERVICE")
+    if [[ -n "$running_ids" ]]; then TELEGRAM_WAS_RUNNING=true; fi
+    while IFS= read -r container; do
+      [[ -n "$container" ]] || continue
+      previous_id=$(docker inspect --format '{{.Image}}' "$container")
+      [[ -z "$OLD_TELEGRAM_IMAGE" || "$OLD_TELEGRAM_IMAGE" == "$previous_id" ]] ||
+        die "Telegram replicas use different images; update them separately"
+      OLD_TELEGRAM_IMAGE="$previous_id"
+    done <<< "$container_ids"
+  fi
+  image=$(json -r '.services["telegram-bot-api"].image' < "$WORK_DIR/resolved.json")
+  log "Pulling Telegram Bot API image $image"
+  docker pull "$image"
+}
+
+deployment_files() {
+  local environment line configured_files="" separator=: path directory name
+  if (( ${#COMPOSE_FILES[@]} == 0 )); then
+    # An empty stdin project resolves .env even before the first deployment.
+    # Never source user configuration as shell code.
+    environment=$(docker compose --project-directory "$PWD" -f - config --environment <<< 'services: {}')
+    while IFS= read -r line; do
+      case "$line" in
+        COMPOSE_FILE=*) configured_files="${line#*=}" ;;
+        COMPOSE_PATH_SEPARATOR=*) separator="${line#*=}" ;;
+      esac
+    done <<< "$environment"
+    if [[ -n "$configured_files" ]]; then
+      [[ ${#separator} -eq 1 ]] || die "COMPOSE_PATH_SEPARATOR must be one character"
+      IFS="$separator" read -r -a COMPOSE_FILES <<< "$configured_files"
+    else
+      for name in compose.yaml compose.yml docker-compose.yml docker-compose.yaml; do
+        if [[ -f "$name" ]]; then COMPOSE_FILES+=("$name"); break; fi
+      done
+      if (( ${#COMPOSE_FILES[@]} == 0 )); then COMPOSE_FILES=(docker-compose.yml); fi
+      for name in compose.override.yml compose.override.yaml docker-compose.override.yml docker-compose.override.yaml; do
+        if [[ -f "$name" ]]; then COMPOSE_FILES+=("$name"); break; fi
+      done
+    fi
+  fi
+  local -a absolute=()
+  for path in "${COMPOSE_FILES[@]}"; do
+    if (( ${#absolute[@]} > 0 )) || [[ -e "$path" || -L "$path" ]]; then
+      [[ -f "$path" && ! -L "$path" ]] || die "Compose file must be a regular file, not a symlink: $path"
+    fi
+    directory=$(cd -- "$(dirname -- "$path")" && pwd -P)
+    absolute+=("$directory/$(basename -- "$path")")
+  done
+  COMPOSE_FILES=("${absolute[@]}")
+  TARGET="${COMPOSE_FILES[0]}"
+  PROJECT_OPTIONS=(--project-directory "$(dirname -- "$TARGET")")
+  if [[ -n "$PROJECT_NAME" ]]; then PROJECT_OPTIONS+=(--project-name "$PROJECT_NAME"); fi
+  if [[ -f "$TARGET" ]]; then
+    [[ "$ACTION" != install ]] || die "Compose configuration already exists; use update to preserve its settings"
+    if [[ "$ACTION" == auto ]]; then ACTION=update; fi
+    [[ -z "$INSTALL_PORT" && -z "$INSTALL_DATA_DIR" ]] || die "--port and --data-dir are for first deployment only; edit the existing Compose configuration to change them"
+  else
+    case "$ACTION" in
+      update|reset-password) die "No Compose deployment found; $ACTION requires an existing Compose configuration" ;;
+    esac
+    ACTION=install
+  fi
+}
+
+list_render_devices() {
+  local device
+  for device in /dev/dri/renderD*; do
+    if [[ -c "$device" ]]; then printf '%s\n' "$device"; fi
+  done
+}
+
+render_vendor() { cat "/sys/class/drm/${1##*/}/device/vendor"; }
+
+pci_gpu_vendors() {
+  local vendor_file device_class
+  for vendor_file in /sys/bus/pci/devices/*/vendor; do
+    [[ -r "$vendor_file" && -r "${vendor_file%/*}/class" ]] || continue
+    read -r device_class < "${vendor_file%/*}/class"
+    if [[ "$device_class" == 0x03* ]]; then cat "$vendor_file"; fi
+  done
+}
+
+gpu_ready() {
+  local mode
+  for mode in "${READY_GPU[@]}"; do [[ "$mode" != "$1" ]] || return 0; done
+  return 1
+}
+
+detect_host_gpu() {
+  local info="$1" endpoint="${DOCKER_HOST:-}" operating_system rootless device vendor names vendors
+  READY_GPU=()
+  if [[ -n "${DOCKER_CONTEXT:-}" || -z "$endpoint" ]]; then
+    endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+  fi
+  operating_system=$(json -r '.OperatingSystem // "" | ascii_downcase' < "$info")
+  [[ "$(uname -s)" == Linux && "$endpoint" == unix://* && "$operating_system" != *"docker desktop"* ]] ||
+    die "Automatic GPU detection requires a local Linux Docker Engine; use --gpu keep for other Docker hosts"
+  rootless=$(json -r 'any((.SecurityOptions // [])[]; contains("rootless"))' < "$info")
+  while IFS= read -r device; do
+    [[ -n "$device" ]] || continue
+    vendor=$(render_vendor "$device" 2>/dev/null) || continue
+    case "$vendor" in 0x8086|0x1002) ;; *) continue ;; esac
+    if [[ "$rootless" != true || ( -r "$device" && -w "$device" ) ]]; then
+      if ! gpu_ready vaapi; then READY_GPU+=(vaapi); fi
+    else
+      log "Cannot access $device; check render/video group permissions"
+    fi
+  done < <(list_render_devices)
+  vendors=$(pci_gpu_vendors)
+  if [[ "$vendors" == *0x8086* || "$vendors" == *0x1002* ]] && ! gpu_ready vaapi; then
+    log "Intel/AMD GPU found, but no usable /dev/dri/renderD* device; check the host kernel driver and device permissions"
+  fi
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    if names=$(timeout 10s nvidia-smi --query-gpu=name --format=csv,noheader) && [[ -n "$names" ]]; then
+      if json -e '.Runtimes | has("nvidia")' < "$info" >/dev/null; then
+        READY_GPU+=(nvidia)
+      else
+        log "NVIDIA driver works, but Docker has no NVIDIA runtime; install NVIDIA Container Toolkit and configure Docker"
+      fi
+    elif [[ "$vendors" == *0x10de* ]]; then
+      log "NVIDIA GPU found, but nvidia-smi failed or timed out; check the host driver"
+    fi
+  elif [[ "$vendors" == *0x10de* ]]; then
+    log "NVIDIA GPU found, but nvidia-smi is missing; install the host NVIDIA driver"
+  fi
+}
+
+choose_gpu() {
+  local existing mode
+  existing=$(json -r '.services[$service] | gpu_modes | join(" ")' < "$WORK_DIR/effective.json")
+  SELECTED_GPU="$GPU_MODE"
+  case "$GPU_MODE" in
+    keep|cpu) return ;;
+    auto)
+      if [[ -n "$existing" ]]; then
+        for mode in $existing; do
+          gpu_ready "$mode" || die "Existing GPU prerequisites are not ready; fix them or use --gpu cpu/keep"
+        done
+        SELECTED_GPU=keep
+      elif gpu_ready vaapi; then SELECTED_GPU=vaapi
+      elif gpu_ready nvidia; then SELECTED_GPU=nvidia
+      else SELECTED_GPU=cpu
+      fi
+      ;;
+    *) gpu_ready "$GPU_MODE" || die "$GPU_MODE prerequisites are not ready; the deployment has not been changed" ;;
+  esac
+}
+
+restore_deployment() {
+  if [[ "$ACTION" == install ]]; then
+    log "Installation failed; generated Compose configuration and application data have been kept. Fix the issue and run the script again"
+    return
+  fi
+  log "Update failed; restoring the original Compose configuration"
+  RESTORING_DEPLOYMENT=true
+  if [[ "$TELEGRAM_MODE" == enable ]]; then
+    if [[ "$TELEGRAM_ADDED" == true ]]; then
+      compose_with "$WORK_DIR/proposed.json" "${COMPOSE_FILES[@]:1}" -- rm --stop --force "$TELEGRAM_SERVICE" ||
+        log "Could not remove the newly added Telegram container; persistent data has been kept"
+    elif [[ "$TELEGRAM_WAS_RUNNING" != true ]]; then
+      compose_with "$WORK_DIR/proposed.json" "${COMPOSE_FILES[@]:1}" -- stop "$TELEGRAM_SERVICE" ||
+        log "Could not return Telegram Bot API to its previous stopped state"
+    fi
+  fi
+  if ! mv -f -- "$WORK_DIR/original.yml" "$TARGET"; then
+    log "Configuration restore failed; recover from $BACKUP_FILE"
+    return
+  fi
+  if [[ -z "$OLD_IMAGE" ]]; then
+    log "No previous local image was available for container rollback"
+    return
+  fi
+  if ! json -n --arg image "$OLD_IMAGE" --arg bot_image "$OLD_TELEGRAM_IMAGE" '
+      {services: {($service): {image: $image}}} |
+      if $bot_image != "" then .services["telegram-bot-api"] = {image: $bot_image} else . end
+    ' > "$WORK_DIR/rollback.yml"; then
+    log "Could not prepare the previous image rollback"
+    return
+  fi
+  if [[ "$TELEGRAM_WAS_RUNNING" == true ]]; then
+    compose_with "${COMPOSE_FILES[@]}" "$WORK_DIR/rollback.yml" -- up -d --no-build --no-deps --pull never \
+      --wait --wait-timeout "$WAIT_TIMEOUT" "$TELEGRAM_SERVICE" || log "Could not restore the previous Telegram image"
+  fi
+  if start_with "${COMPOSE_FILES[@]}" "$WORK_DIR/rollback.yml"; then
+    log "Previous container image restored"
+  else
+    log "Container rollback failed; configuration is restored. Check docker compose logs"
+  fi
+}
+
+finish() {
+  local status="$1"
+  trap - EXIT INT TERM HUP
+  set +e
+  if [[ "$NEEDS_ROLLBACK" == true ]]; then restore_deployment; fi
+  if [[ -n "$TEMPLATE_CONTAINER" ]]; then docker rm -v "$TEMPLATE_CONTAINER" >/dev/null; fi
+  if [[ -n "$WORK_DIR" ]]; then rm -rf -- "$WORK_DIR"; fi
+  if (( status )); then log "Deployment failed (exit $status)" >&2; fi
+  exit "$status"
+}
+
+apply_deployment() {
+  local target_image old_reference container_ids container image_id previous_id="" mode
+  local -a candidate_files
+  target_image="$REQUESTED_IMAGE"
+  if [[ "$ACTION" == update ]]; then
+    cp -p -- "$TARGET" "$WORK_DIR/original.yml"
+    raw_json "$TARGET" > "$WORK_DIR/local.json"
+    compose config --format json > "$WORK_DIR/effective.json"
+    json -e '.services | has($service)' < "$WORK_DIR/effective.json" >/dev/null || die "Deployment must contain service $SERVICE"
+    old_reference=$(json -r '.services[$service].image // ""' < "$WORK_DIR/effective.json")
+    if [[ -z "$target_image" ]]; then target_image="$old_reference"; fi
+  elif [[ -z "$target_image" ]]; then
+    target_image="$DEFAULT_IMAGE"
+  fi
+  [[ -n "$target_image" && "$target_image" != -* ]] || die "The service must specify an image, or pass --image"
+  docker info --format '{{json .}}' > "$WORK_DIR/docker-info.json"
+  case "$GPU_MODE" in keep|cpu) ;; *) detect_host_gpu "$WORK_DIR/docker-info.json" ;; esac
+  if [[ "$ACTION" == update ]]; then
+    choose_gpu
+    # Capture the running image ID before updating a mutable tag such as stable.
+    container_ids=$(compose ps -a -q "$SERVICE")
+    while IFS= read -r container; do
+      [[ -n "$container" ]] || continue
+      previous_id=$(docker inspect --format '{{.Image}}' "$container")
+      [[ -z "$OLD_IMAGE" || "$OLD_IMAGE" == "$previous_id" ]] || die "Service replicas use different images; update them separately"
+      OLD_IMAGE="$previous_id"
+    done <<< "$container_ids"
+    if [[ -z "$OLD_IMAGE" && -n "$old_reference" ]]; then
+      if previous_id=$(docker image inspect --format '{{.Id}}' "$old_reference" 2>/dev/null); then OLD_IMAGE="$previous_id"; fi
+    fi
+  fi
+  log "Pulling $target_image"
+  docker pull "$target_image"
+  image_id=$(docker image inspect --format '{{.Id}}' "$target_image")
+  TEMPLATE_CONTAINER=$(docker create --entrypoint /bin/true "$image_id")
+  if ! docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/docker-compose.yml" "$WORK_DIR/docker-compose.yml"; then
+    die "The image has no deployment templates; publish an image built with the updated Dockerfile first"
+  fi
+  raw_json "$WORK_DIR/docker-compose.yml" > "$WORK_DIR/template.json"
+  if [[ "$ACTION" == install ]]; then
+    cp -- "$WORK_DIR/template.json" "$WORK_DIR/local.json"
+    candidate_files=("$WORK_DIR/docker-compose.yml" "${COMPOSE_FILES[@]:1}")
+    compose_with "${candidate_files[@]}" -- config --format json > "$WORK_DIR/effective.json"
+    container_ids=$(compose_with "${candidate_files[@]}" -- ps -a -q "$SERVICE")
+    [[ -z "$container_ids" ]] || die "Existing service containers were found; restore their original Compose configuration and use update"
+    choose_gpu
+  fi
+  log "GPU access: $SELECTED_GPU; the application's GPU switch will not be changed"
+  printf '{}\n' > "$WORK_DIR/gpu.json"
+  case "$SELECTED_GPU" in
+    nvidia|vaapi)
+      mode="docker-compose.gpu-$SELECTED_GPU.yml"
+      docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/$mode" "$WORK_DIR/$mode"
+      raw_json "$WORK_DIR/docker-compose.yml" "$WORK_DIR/$mode" > "$WORK_DIR/gpu.json"
+      ;;
+  esac
+  json -n --slurpfile template "$WORK_DIR/template.json" --slurpfile local "$WORK_DIR/local.json" \
+    --slurpfile gpu "$WORK_DIR/gpu.json" --arg mode "$SELECTED_GPU" --arg image "$target_image" \
+    --arg action "$ACTION" --arg requested_image "$REQUESTED_IMAGE" \
+    --arg port "$INSTALL_PORT" --arg directory "$INSTALL_DATA_DIR" '
+      merge_deployment($template[0]; $local[0]) |
+      (if $action == "install" or $requested_image != "" then .services[$service].image = $image else . end) |
+      installation_settings($port; $directory) |
+      configure_gpu($mode; $gpu[0])
+    ' > "$WORK_DIR/proposed.json"
+  if [[ "$TELEGRAM_MODE" == enable ]]; then prepare_telegram; fi
+  compose_with "$WORK_DIR/proposed.json" -- config --format yaml "${RAW_OPTIONS[@]}" > "$WORK_DIR/candidate.yml"
+  candidate_files=("$WORK_DIR/candidate.yml" "${COMPOSE_FILES[@]:1}")
+  compose_with "${candidate_files[@]}" -- config --format json > "$WORK_DIR/resolved.json"
+  # Atomic replacement changes a file bind mount's inode. Restart the website
+  # when it reads Telegram deployment metadata so it receives the current file.
+  if json -e '(.services[$service].environment.VIDEO_TELEGRAM_COMPOSE // "") != ""' < "$WORK_DIR/resolved.json" >/dev/null; then
+    FORCE_RECREATE=true
+  fi
+  json -e --arg image "$target_image" '.services[$service].image == $image' < "$WORK_DIR/resolved.json" >/dev/null ||
+    die "An overlay overrides the target image; update that overlay or its environment variable first"
+  json -e --arg mode "$SELECTED_GPU" --slurpfile before "$WORK_DIR/effective.json" '
+    (.services[$service] | gpu_modes) ==
+    (if $mode == "keep" then ($before[0].services[$service] | gpu_modes)
+     elif $mode == "cpu" then [] else [$mode] end)
+  ' < "$WORK_DIR/resolved.json" >/dev/null || die "An overlay conflicts with the requested GPU mode; update it or use --gpu keep"
+  if [[ "$TELEGRAM_MODE" == enable ]]; then validate_and_pull_telegram; fi
+  if [[ "$ACTION" == update ]]; then
+    json -e --slurpfile before "$WORK_DIR/effective.json" '.name == $before[0].name' < "$WORK_DIR/resolved.json" >/dev/null ||
+      die "The update would change the Compose project name"
+    cmp -s -- "$TARGET" "$WORK_DIR/original.yml" || die "Compose file changed during the update; retry with the latest local configuration"
+    BACKUP_FILE=$(mktemp "$TARGET.bak-$(date -u +%Y%m%dT%H%M%S).XXXXXX")
+    cp -p -- "$TARGET" "$BACKUP_FILE"
+    log "Configuration backup: $BACKUP_FILE"
+    chmod --reference="$WORK_DIR/original.yml" "$WORK_DIR/candidate.yml"
+    if [[ "$TELEGRAM_MODE" == enable ]]; then chmod 600 "$WORK_DIR/candidate.yml"; fi
+    chown --reference="$WORK_DIR/original.yml" "$WORK_DIR/candidate.yml"
+    NEEDS_ROLLBACK=true
+    mv -f -- "$WORK_DIR/candidate.yml" "$TARGET"
+  else
+    # Publishing with a hard link is atomic and cannot overwrite a file created
+    # by another process after discovery. Both paths are on the same filesystem.
+    ln -- "$WORK_DIR/candidate.yml" "$TARGET" || die "Compose configuration appeared during installation; it has been left unchanged"
+    NEEDS_ROLLBACK=true
+  fi
+  start_with "${COMPOSE_FILES[@]}"
+  NEEDS_ROLLBACK=false
+  log "Deployment complete. Compose configuration: $TARGET"
+  log "Enable GPU in the administration panel when ready"
+  if [[ "$TELEGRAM_MODE" == enable ]]; then
+    log "Telegram Bot API deployed. Set the Bot Token, allowed user IDs and receiving switch in the website administration panel"
+  fi
+}
+
+main() {
+  parse_args "$@"
+  if [[ "$ACTION" == reset-password ]]; then
+    command -v docker >/dev/null 2>&1 || die "docker is required; install it before running this script"
+    deployment_files
+    reset_password "${RESET_ARGS[@]}"
+    return
+  fi
+  local command help_text option
+  for command in docker flock timeout cmp mktemp cp mv ln chmod chown; do
+    command -v "$command" >/dev/null 2>&1 || die "$command is required; install it before running this script"
+  done
+  help_text=$(docker compose config --help)
+  for option in "${RAW_OPTIONS[@]}"; do
+    [[ "$help_text" == *"$option"* ]] || die "Upgrade Docker Compose: config must support $option"
+  done
+  umask 077
+  deployment_files
+  ensure_jq
+  # Lock a separate inode because the main Compose file is replaced atomically.
+  exec {UPDATE_LOCK}> "$(dirname -- "$TARGET")/.$(basename -- "$TARGET").update.lock"
+  flock -n "$UPDATE_LOCK" || die "Another deployment update is running"
+  WORK_DIR=$(mktemp -d "$(dirname -- "$TARGET")/.docker-update.XXXXXX")
+  trap 'finish "$?"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  apply_deployment
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
