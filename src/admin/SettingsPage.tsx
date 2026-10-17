@@ -756,7 +756,7 @@ export function SettingsPage() {
                     enabled={draft.useGPU}
                     disabled={controlsDisabled}
                     onChange={(enabled) => updateVisualField("useGPU", enabled)}
-                    onUnavailable={() => show("未检测到 GPU", "error")}
+                    onError={(message) => show(message, "error")}
                   />
                 </SettingsSection>
               )}

@@ -6069,20 +6069,6 @@ body.admin-mobile-nav-open {
   white-space: nowrap;
 }
 
-.admin-config-gpu__error {
-  overflow-wrap: anywhere;
-}
-
-.admin-config-gpu__error,
-.admin-config-gpu__note {
-  margin: 8px 0 0;
-  font-size: 13px;
-}
-
-.admin-config-gpu__error {
-  color: var(--danger);
-}
-
 #config-preview .admin-config-row {
   display: flex;
   flex-wrap: wrap;

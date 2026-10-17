@@ -6,7 +6,7 @@ type Props = {
   enabled: boolean;
   disabled: boolean;
   onChange: (enabled: boolean) => void;
-  onUnavailable: () => void;
+  onError: (message: string) => void;
 };
 
 function shortGPUName(name: string) {
@@ -20,10 +20,9 @@ function shortGPUName(name: string) {
   return compact && compact !== "GPU" ? compact : name;
 }
 
-export function GPUAccelerationSettings({ enabled, disabled, onChange, onUnavailable }: Props) {
+export function GPUAccelerationSettings({ enabled, disabled, onChange, onError }: Props) {
   const [status, setStatus] = useState<api.GPUStatus | null>(null);
   const [checking, setChecking] = useState(false);
-  const [error, setError] = useState("");
   const probeRequest = useRef<AbortController | null>(null);
   const requestSequence = useRef(0);
   const onChangeRef = useRef(onChange);
@@ -36,10 +35,8 @@ export function GPUAccelerationSettings({ enabled, disabled, onChange, onUnavail
       const sequence = ++requestSequence.current;
       void api.getGPUStatus(controller.signal).then((next) => {
         if (!controller.signal.aborted && sequence === requestSequence.current) setStatus(next);
-      }).catch((cause: unknown) => {
-        if (!controller.signal.aborted && sequence === requestSequence.current) {
-          setError(cause instanceof Error ? cause.message : "读取 GPU 状态失败");
-        }
+      }).catch(() => {
+        // Background refreshes are best-effort; only explicit probes report errors.
       });
     };
     refresh();
@@ -57,7 +54,6 @@ export function GPUAccelerationSettings({ enabled, disabled, onChange, onUnavail
     probeRequest.current = controller;
     ++requestSequence.current;
     setChecking(true);
-    setError("");
     try {
       const next = await api.probeGPU(controller.signal);
       if (controller.signal.aborted) return;
@@ -65,11 +61,11 @@ export function GPUAccelerationSettings({ enabled, disabled, onChange, onUnavail
       if (next.available) {
         onChangeRef.current(true);
       } else {
-        onUnavailable();
+        onError("未检测到 GPU");
       }
     } catch (cause) {
       if (!controller.signal.aborted) {
-        setError(cause instanceof Error ? cause.message : "GPU 检测失败");
+        onError(cause instanceof Error ? cause.message : "GPU 检测失败");
       }
     } finally {
       if (!controller.signal.aborted) {
@@ -116,14 +112,6 @@ export function GPUAccelerationSettings({ enabled, disabled, onChange, onUnavail
           </button>
         </div>
       </SettingsRow>
-      {error && (
-        <p className="admin-config-gpu__error" role="alert">{error}</p>
-      )}
-      {Boolean(status?.fallbackCount) && (
-        <p className="admin-config-gpu__note">
-          本次运行已有 {status?.fallbackCount} 个任务回退 CPU，原因见运行日志。
-        </p>
-      )}
     </div>
   );
 }
