@@ -94,8 +94,7 @@
     color: var(--video-card-title);
   }
 
-  .video-card__title-link:hover .video-title,
-  .video-card__link:hover + .video-card__body .video-title {
+  .video-card__title-link:hover .video-title {
     text-decoration-line: underline;
   }
 }
