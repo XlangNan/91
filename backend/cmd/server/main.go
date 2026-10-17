@@ -327,6 +327,7 @@ func main() {
 		BackupTransfers:        backupTransferManager,
 		Logs:                   logStore,
 		ConfigManager:          configManager,
+		GPU:                    app.generationHardware(),
 		VersionFilePath:        versionFilePath,
 		ImageVersion:           imageVersion,
 		GitHubRepo:             githubRepo,

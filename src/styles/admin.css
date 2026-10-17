@@ -6043,6 +6043,46 @@ body.admin-mobile-nav-open {
   grid-template-columns: minmax(0, 1fr);
 }
 
+#config-preview .admin-config-gpu {
+  min-width: 0;
+}
+
+.admin-config-gpu .admin-config-row__copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-config-gpu .admin-config-gpu__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.admin-config-gpu__detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: var(--weight-regular);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-config-gpu__error {
+  overflow-wrap: anywhere;
+}
+
+.admin-config-gpu__error,
+.admin-config-gpu__note {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.admin-config-gpu__error {
+  color: var(--danger);
+}
+
 #config-preview .admin-config-row {
   display: flex;
   flex-wrap: wrap;

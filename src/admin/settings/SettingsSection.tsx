@@ -42,7 +42,7 @@ export function SettingsSection({
 }
 
 type SettingsRowProps = {
-  label: string;
+  label: ReactNode;
   description?: ReactNode;
   labelID?: string;
   descriptionID?: string;

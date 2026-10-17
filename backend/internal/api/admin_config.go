@@ -59,6 +59,17 @@ func (a *AdminServer) handlePutConfigYAML(w http.ResponseWriter, r *http.Request
 	if expectedVersion == "*" {
 		expectedVersion = ""
 	}
+	if candidate, parseErr := config.Parse(data); parseErr == nil && candidate.Generation.UseGPU && !a.ConfigManager.LiveSettings().UseGPU {
+		if a.GPU == nil {
+			writeErr(w, r, http.StatusServiceUnavailable, errors.New("GPU 检测服务不可用"))
+			return
+		}
+		status := a.GPU.Check(r.Context())
+		if !status.Available {
+			writeErr(w, r, http.StatusBadRequest, errors.New(status.Reason))
+			return
+		}
+	}
 	result, err := a.ConfigManager.ReplaceYAML(data, expectedVersion)
 	if err != nil {
 		switch {
@@ -82,6 +93,24 @@ func (a *AdminServer) handlePutConfigYAML(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("ETag", `"`+result.Version+`"`)
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *AdminServer) handleGPUStatus(w http.ResponseWriter, r *http.Request) {
+	if a.GPU == nil {
+		writeErr(w, r, http.StatusServiceUnavailable, errors.New("GPU 检测服务不可用"))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, a.GPU.Status())
+}
+
+func (a *AdminServer) handleGPUProbe(w http.ResponseWriter, r *http.Request) {
+	if a.GPU == nil {
+		writeErr(w, r, http.StatusServiceUnavailable, errors.New("GPU 检测服务不可用"))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, a.GPU.Probe(r.Context()))
 }
 
 func configYAMLInvalid(data []byte) bool {

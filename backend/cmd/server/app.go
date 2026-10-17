@@ -30,12 +30,14 @@ type App struct {
 	// Each drive completes missing metadata after its own generation queues drain.
 	durationBackfills map[string]*driveDurationBackfill
 	// Shared for the lifetime of the app, including drive remounts.
-	generationLimitsOnce sync.Once
-	thumbnailLimiter     *tasklimit.Limiter
-	previewLimiter       *tasklimit.Limiter
-	previewDisabled      atomic.Bool
-	fingerprintLimiter   *tasklimit.Limiter
-	cancels              map[string]context.CancelFunc
+	generationLimitsOnce   sync.Once
+	generationHardwareOnce sync.Once
+	hardware               *preview.Hardware
+	thumbnailLimiter       *tasklimit.Limiter
+	previewLimiter         *tasklimit.Limiter
+	previewDisabled        atomic.Bool
+	fingerprintLimiter     *tasklimit.Limiter
+	cancels                map[string]context.CancelFunc
 	// scriptCrawlers 按 driveID 索引，每个脚本爬虫 drive 独立一个 Crawler。
 	scriptCrawlers map[string]*scriptcrawler.Crawler
 

@@ -15,6 +15,7 @@ import {
 } from "yaml";
 
 export type SettingsDraft = TelegramDraft & {
+  useGPU: boolean;
   previewEnabled: boolean;
   nightlyDisabled: boolean;
   nightlyStartTime: string;
@@ -28,6 +29,7 @@ export type VisualField = keyof SettingsDraft;
 
 export const DEFAULT_DRAFT: SettingsDraft = {
   ...TELEGRAM_DEFAULTS,
+  useGPU: false,
   previewEnabled: true,
   nightlyDisabled: false,
   nightlyStartTime: "01:00",
@@ -165,6 +167,11 @@ function draftFromDocument(document: ReturnType<typeof configDocument>): Setting
     }
     return value;
   }
+  const configuredGPU = document.getIn(["generation", "use_gpu"]);
+  if (configuredGPU != null && typeof configuredGPU !== "boolean") {
+    throw new Error("generation.use_gpu 必须是布尔值");
+  }
+  const useGPU = configuredGPU ?? DEFAULT_DRAFT.useGPU;
   const thumbnailConcurrency = generationConcurrency(
     "thumbnail_concurrency", DEFAULT_DRAFT.thumbnailConcurrency
   );
@@ -177,6 +184,7 @@ function draftFromDocument(document: ReturnType<typeof configDocument>): Setting
 
   return {
     ...telegramDraftFromDocument(document),
+    useGPU,
     previewEnabled,
     nightlyDisabled,
     nightlyStartTime,
@@ -854,6 +862,18 @@ export function applyVisualFields(
   fields: ReadonlySet<VisualField>
 ) {
   let updated = source;
+  if (fields.has("useGPU")) {
+    const document = configDocument(updated);
+    updated = applySourceEdits(
+      updated,
+      booleanFieldEdits(
+        updated,
+        document,
+        { section: "generation", key: "use_gpu", path: "generation.use_gpu" },
+        draft.useGPU
+      )
+    );
+  }
   if (fields.has("previewEnabled")) {
     const document = configDocument(updated);
     updated = applySourceEdits(
@@ -915,6 +935,9 @@ export function applyVisualFields(
 
 export function changedVisualFields(saved: SettingsDraft, draft: SettingsDraft) {
   const fields = new Set<VisualField>();
+  if (saved.useGPU !== draft.useGPU) {
+    fields.add("useGPU");
+  }
   if (saved.previewEnabled !== draft.previewEnabled) {
     fields.add("previewEnabled");
   }

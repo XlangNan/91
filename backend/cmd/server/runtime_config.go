@@ -6,6 +6,7 @@ import (
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/config"
+	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/tasklimit"
 )
 
@@ -25,6 +26,7 @@ func (a *App) applyLiveConfig(ctx context.Context, settings config.LiveSettings)
 	if a == nil {
 		return nil
 	}
+	a.generationHardware().SetEnabled(ctx, settings.UseGPU)
 	if a.nightlyRunner != nil {
 		// The configuration parser already validated and normalized these values.
 		// Runner validates again and swaps the schedule state atomically at its boundary.
@@ -43,6 +45,19 @@ func (a *App) applyLiveConfig(ctx context.Context, settings config.LiveSettings)
 
 	a.applyPreviewEnabled(ctx, settings.PreviewEnabled)
 	return nil
+}
+
+func (a *App) generationHardware() *preview.Hardware {
+	a.generationHardwareOnce.Do(func() {
+		cfg := preview.Config{}
+		if a.cfg != nil {
+			cfg.FFmpegPath = a.cfg.Preview.FFmpegPath
+			cfg.FFprobePath = a.cfg.Preview.FFprobePath
+			cfg.FFmpegThreads = a.cfg.Preview.FFmpegThreads
+		}
+		a.hardware = preview.NewHardware(cfg)
+	})
+	return a.hardware
 }
 
 func (a *App) previewEnabled() bool {

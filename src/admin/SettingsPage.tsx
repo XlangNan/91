@@ -28,6 +28,7 @@ import {
 import { useAdminFloatingActionSpace } from "./useAdminFloatingActionSpace";
 import { useAdminRouteRevalidation } from "./AdminRouteCache";
 import { SettingsRow, SettingsSection } from "./settings/SettingsSection";
+import { GPUAccelerationSettings } from "./settings/GPUAccelerationSettings";
 import {
   DEFAULT_DRAFT,
   MAX_GENERATION_CONCURRENCY,
@@ -751,6 +752,12 @@ export function SettingsPage() {
                       </button>
                     </div>
                   </SettingsRow>
+                  <GPUAccelerationSettings
+                    enabled={draft.useGPU}
+                    disabled={controlsDisabled}
+                    onChange={(enabled) => updateVisualField("useGPU", enabled)}
+                    onUnavailable={() => show("未检测到 GPU", "error")}
+                  />
                 </SettingsSection>
               )}
               <TelegramSettingsSection active={telegramSelected} disabled={controlsDisabled} draft={draft} onChange={updateVisualField} />

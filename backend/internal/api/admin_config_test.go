@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/video-site/backend/internal/config"
+	"github.com/video-site/backend/internal/preview"
 )
 
 func newConfigAPIForTest(t *testing.T, source string) (*AdminServer, string) {
@@ -24,6 +25,32 @@ func newConfigAPIForTest(t *testing.T, source string) (*AdminServer, string) {
 		t.Fatalf("new config manager: %v", err)
 	}
 	return &AdminServer{ConfigManager: manager}, path
+}
+
+func TestConfigCannotEnableUnavailableGPUOrModifyFile(t *testing.T) {
+	server, path := newConfigAPIForTest(t, "generation: { use_gpu: false }\n")
+	server.GPU = preview.NewHardware(preview.Config{FFmpegPath: filepath.Join(t.TempDir(), "missing-ffmpeg")})
+	original, _ := os.ReadFile(path)
+	probe := httptest.NewRecorder()
+	server.handleGPUProbe(probe, httptest.NewRequest(http.MethodPost, "/admin/api/generation/gpu/probe", nil))
+	var status preview.HardwareStatus
+	if err := json.Unmarshal(probe.Body.Bytes(), &status); err != nil || probe.Code != 200 || status.Available || status.Reason == "" {
+		t.Fatalf("probe = %s, err=%v", probe.Body.String(), err)
+	}
+	response := httptest.NewRecorder()
+	server.handlePutConfigYAML(response, httptest.NewRequest(http.MethodPut, "/admin/api/config.yaml", strings.NewReader("generation: { use_gpu: true }\n")))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("GPU enable = %d %s", response.Code, response.Body.String())
+	}
+	written, _ := os.ReadFile(path)
+	if string(written) != string(original) || server.ConfigManager.LiveSettings().UseGPU {
+		t.Fatal("rejected GPU setting was persisted")
+	}
+	state := httptest.NewRecorder()
+	server.handleGPUStatus(state, httptest.NewRequest(http.MethodGet, "/admin/api/generation/gpu", nil))
+	if state.Code != 200 || state.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("GPU status = %d %s", state.Code, state.Body.String())
+	}
 }
 
 func TestConfigYAMLGetReturnsRealFileAndETag(t *testing.T) {

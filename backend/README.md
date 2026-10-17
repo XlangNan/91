@@ -13,6 +13,28 @@ go build -o server ./cmd/server
 
 每次启动时，服务会先迁移旧版数据库配置，再按随程序打包的 `config.example.yaml` 重建实际配置：保留模板中同名字段的已有值（包括 `false`、`0`、空字符串和空列表），缺失字段使用模板默认值，字段顺序和注释统一采用模板，模板外的字段及自定义注释会被清理。更新完成后原子替换原文件并保留文件权限；配置没有变化时不会重复写入。升级无需手动复制模板，Docker 和原生部署使用同一流程。
 
+## GPU 媒体生成
+
+默认使用 CPU。在配置面板的「媒体生成」中开启「GPU 硬件加速」，对应 `generation.use_gpu: true`。保存后用于后续封面和预览任务，无需重启；正在执行的任务沿用开始时的设置，已有资源不会自动重生成。
+
+当前自动检测 Linux VAAPI（Intel / AMD）和 NVIDIA NVDEC / NVENC。开启 GPU 开关时，检测会实际生成 JPEG 封面和 H.264 预览，验证设备、驱动、FFmpeg 滤镜和编码器，而非仅检查编码器列表。开关标题旁在检测时显示「检测中」，开启且检测成功后显示显卡简称，悬停可查看完整名称，关闭开关即隐藏名称；读取名称失败不影响 GPU 能力检测结果。开启时若没有可用 GPU，开关保持关闭，右下角 Toast 提示「未检测到 GPU」，面板不展示硬件检测失败原因；后台读取状态不会重复弹出提示。面板保留本次运行的 CPU 回退次数。视频不兼容或硬件处理失败时，整个资源任务回退 CPU，原因记录在运行日志；网络错误继续使用原有重试策略。
+
+原生部署需要安装匹配的 GPU 驱动，并保证服务进程能访问设备。FFmpeg 需支持 `scale_vaapi` / `h264_vaapi` 或 `scale_cuda` / `h264_nvenc`；Intel 部分平台还需要完整的媒体驱动和固件。封面使用硬件解码和缩放后输出 JPEG；预览使用硬件解码、缩放和 H.264 编码，淡入淡出在缩小后的画面上处理。
+
+Docker 镜像包含 Mesa VAAPI 驱动，amd64 镜像另含 Intel 媒体驱动。默认 Compose 使用 CPU，按设备选择一个附加文件，在仓库根目录启动：
+
+```bash
+# Intel / AMD：宿主机需要有 /dev/dri/renderD* 设备
+docker compose -f docker-compose.yml -f docker-compose.gpu-vaapi.yml up -d
+
+# NVIDIA：宿主机需安装 NVIDIA 驱动和 NVIDIA Container Toolkit
+docker compose -f docker-compose.yml -f docker-compose.gpu-nvidia.yml up -d
+```
+
+启动后在面板开启 GPU 开关。没有可用设备时不能通过面板启用；如果恢复的配置或手动编辑的 YAML 已启用 GPU，但设备不可用，服务仍会启动并使用 CPU。当前不支持的其他硬件后端也会视为不可用。
+
+GPU 主机可执行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -run TestHardwareRealFFmpeg -v`，验证生产使用的封面与预览滤镜链。普通测试环境缺少 GPU 时跳过该实机测试。
+
 ## 目录
 
 仓库根目录是前端（Vite + React），`backend/` 是本文档描述的 Go 服务：

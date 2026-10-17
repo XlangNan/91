@@ -30,6 +30,7 @@ import (
 )
 
 type Config struct {
+	Hardware        *Hardware
 	FFmpegPath      string
 	FFprobePath     string
 	FFmpegThreads   int
@@ -48,6 +49,9 @@ func generationDriveID(drv drives.Drive) string {
 
 type Generator struct {
 	cfg Config
+	// Captured once per asset so configuration changes never mix encoders
+	// between the segments of an in-flight preview.
+	hardware *hardwareBackend
 }
 
 const teaserSegmentTimeout = 90 * time.Second
@@ -282,6 +286,15 @@ func containsOffset(offsets []float64, target float64) bool {
 
 // GenerateThumbnail 抽一张 jpg 封面。默认从视频中间抽帧，失败时回退到更早时间点。
 func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLink, videoID string, duration float64) (string, error) {
+	task := g.forTask()
+	path, err := task.generateThumbnail(ctx, link, videoID, duration)
+	if task.fallbackToCPU(ctx, err) {
+		return task.generateThumbnail(ctx, link, videoID, duration)
+	}
+	return path, err
+}
+
+func (g *Generator) generateThumbnail(ctx context.Context, link *drives.StreamLink, videoID string, duration float64) (string, error) {
 	dir := filepath.Join(g.cfg.LocalDir, "thumbs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -308,6 +321,9 @@ func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLi
 		}
 		if err := g.generateThumbnailAtOffset(ctx, link, tempPath, offset, &colorRepair); err != nil {
 			lastErr = err
+			if g.hardware != nil && hardwareFailure(err) {
+				return "", err
+			}
 			if !thumbnailOffsetFallbackAllowed(err) {
 				return "", err
 			}
@@ -341,21 +357,22 @@ func (g *Generator) generateThumbnailAtOffset(ctx context.Context, link *drives.
 		"-threads", strconv.Itoa(g.cfg.FFmpegThreads),
 		"-ss", fmt.Sprintf("%.2f", offset),
 	}
+	args = append(args, g.hardware.inputOptions()...)
 	outputArgs := []string{
 		"-threads", strconv.Itoa(g.cfg.FFmpegThreads),
 		"-frames:v", "1",
-		"-vf", thumbnailVideoFilter(g.cfg.Width),
+		"-vf", g.thumbnailFilter(),
 		"-q:v", "3",
 		"-y", dst,
 	}
 	out, err := g.runMediaCommand(ctx2, link, ffmpegLink, args, outputArgs, colorRepair)
 	if err != nil {
 		os.Remove(dst)
-		return ffmpegCommandError("ffmpeg thumb", err, out)
+		return g.processingError(ffmpegCommandError("ffmpeg thumb", err, out))
 	}
 	if info, statErr := os.Stat(dst); statErr != nil || info.Size() == 0 {
 		os.Remove(dst)
-		return fmt.Errorf("ffmpeg thumb produced empty file, stderr: %s", string(out))
+		return g.processingError(fmt.Errorf("ffmpeg thumb produced empty file, stderr: %s", string(out)))
 	}
 	return nil
 }
@@ -540,11 +557,16 @@ func preferredSourceDuration(probe localMediaProbe) float64 {
 // Generate 拉取预览视频到本地临时文件，返回路径。
 // 根据 Config.Segments 和视频时长决定是单段还是多段拼接。
 func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, duration float64) (string, error) {
-	return g.generateSerialWithRefresh(ctx, duration, link, nil)
+	return g.GenerateWithLinkRefresh(ctx, link, duration, nil)
 }
 
 func (g *Generator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (string, error) {
-	return g.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
+	task := g.forTask()
+	path, err := task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
+	if task.fallbackToCPU(ctx, err) {
+		return task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
+	}
+	return path, err
 }
 
 type teaserSegmentCandidate struct {
@@ -619,6 +641,9 @@ func (g *Generator) generateSerialWithRefresh(
 			currentLink,
 			&colorRepair,
 		)
+		if g.hardware != nil && hardwareFailure(result.err) {
+			return "", result.err
+		}
 		if refreshAfterFailure != nil && directMediaLinkRefreshAllowed(result.err) {
 			refreshed, refreshErr := refreshAfterFailure(ctx2)
 			if refreshErr == nil && (refreshed == nil || strings.TrimSpace(refreshed.URL) == "") {
@@ -642,6 +667,9 @@ func (g *Generator) generateSerialWithRefresh(
 		}
 
 		if result.err != nil {
+			if g.hardware != nil && hardwareFailure(result.err) {
+				return "", result.err
+			}
 			if !teaserSegmentFallbackAllowed(result.err) {
 				return "", result.err
 			}
@@ -772,7 +800,7 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 	segPath := seg.Name()
 	seg.Close()
 
-	filter := teaserSegmentVideoFilter(g.cfg.Width, fade, eachSec)
+	filter := g.segmentFilter(fade, eachSec)
 
 	args := []string{
 		"-hide_banner",
@@ -785,28 +813,29 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 		"-ss", fmt.Sprintf("%.2f", start),
 		"-t", fmt.Sprintf("%.2f", eachSec),
 	)
+	args = append(args, g.hardware.inputOptions()...)
 	outputArgs := []string{
 		"-threads", strconv.Itoa(g.cfg.FFmpegThreads),
 		"-an",
 		"-vf", filter,
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", "28",
+	}
+	outputArgs = append(outputArgs, g.encoderOptions()...)
+	outputArgs = append(outputArgs,
 		"-movflags", "+faststart",
 		"-y", segPath,
-	}
+	)
 	out, err := g.runMediaCommand(ctx, link, ffmpegLink, args, outputArgs, colorRepair)
 	if err != nil {
 		_ = os.Remove(segPath)
-		return "", ffmpegCommandError("ffmpeg segment", err, out)
+		return "", g.processingError(ffmpegCommandError("ffmpeg segment", err, out))
 	}
 	if info, statErr := os.Stat(segPath); statErr != nil || info.Size() == 0 {
 		_ = os.Remove(segPath)
-		return "", fmt.Errorf("ffmpeg segment produced empty file, stderr: %s", string(out))
+		return "", g.processingError(fmt.Errorf("ffmpeg segment produced empty file, stderr: %s", string(out)))
 	}
 	if err := g.validateGeneratedTeaser(ctx, segPath); err != nil {
 		_ = os.Remove(segPath)
-		return "", err
+		return "", g.processingError(err)
 	}
 	return segPath, nil
 }

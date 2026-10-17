@@ -1197,6 +1197,7 @@ func (a *App) newDriveGenerationWorkers(drv drives.Drive) (*preview.Worker, *pre
 			LocalDir:        a.cfg.Storage.LocalPreviewDir,
 		}
 	}
+	previewCfg.Hardware = a.generationHardware()
 	gen := preview.New(previewCfg)
 	previewWorker := preview.NewWorker(gen, a.cat, drv)
 	previewWorker.Enabled = a.previewEnabled

@@ -179,9 +179,10 @@ type Scanner struct {
 
 // Generation bounds work across every drive, independently of scan concurrency.
 type Generation struct {
-	ThumbnailConcurrency   int `yaml:"thumbnail_concurrency"`
-	PreviewConcurrency     int `yaml:"preview_concurrency"`
-	FingerprintConcurrency int `yaml:"fingerprint_concurrency"`
+	UseGPU                 bool `yaml:"use_gpu"`
+	ThumbnailConcurrency   int  `yaml:"thumbnail_concurrency"`
+	PreviewConcurrency     int  `yaml:"preview_concurrency"`
+	FingerprintConcurrency int  `yaml:"fingerprint_concurrency"`
 }
 
 type Preview struct {

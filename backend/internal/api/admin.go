@@ -16,6 +16,7 @@ import (
 	"github.com/video-site/backend/internal/drives/quark"
 	"github.com/video-site/backend/internal/driveview"
 	"github.com/video-site/backend/internal/mediaimport"
+	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/scanjob"
 	"github.com/video-site/backend/internal/telegram"
 )
@@ -60,6 +61,7 @@ type AdminServer struct {
 	// ConfigManager owns the real config.yaml management surface. Both visual
 	// and source editors read and write this same document.
 	ConfigManager *config.Manager
+	GPU           *preview.Hardware
 	// VersionFilePath points to the installer-written .version file.
 	VersionFilePath string
 	// ImageVersion is the Docker image version injected at build/runtime.
@@ -330,6 +332,8 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Post("/import-jobs/{jobId}/retry", a.handleImportRetry)
 			r.Get("/config.yaml", a.handleGetConfigYAML)
 			r.Put("/config.yaml", a.handlePutConfigYAML)
+			r.Get("/generation/gpu", a.handleGPUStatus)
+			r.Post("/generation/gpu/probe", a.handleGPUProbe)
 			r.Get("/settings", a.handleGetSettings)
 			r.Put("/settings", a.handlePutSettings)
 

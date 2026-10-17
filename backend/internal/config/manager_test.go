@@ -23,6 +23,34 @@ func newManagerForTest(t *testing.T, source string) (*Manager, string) {
 	return manager, path
 }
 
+func TestGPUSettingDefaultsToCPUAndHotReloads(t *testing.T) {
+	manager, path := newManagerForTest(t, "generation: { use_gpu: false }\n")
+	if manager.LiveSettings().UseGPU || DefaultLiveSettings().UseGPU {
+		t.Fatal("GPU must be opt-in")
+	}
+	var applied bool
+	if err := manager.SetApply(func(settings LiveSettings) error {
+		applied = settings.UseGPU
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, version, _ := manager.ReadYAML()
+	result, err := manager.ReplaceYAML([]byte("generation: { use_gpu: true }\n"), version)
+	if err != nil || result.RestartRequired || !result.Settings.UseGPU || !applied {
+		t.Fatalf("GPU hot update = %+v applied=%v err=%v", result, applied, err)
+	}
+	if err := os.WriteFile(path, []byte("generation: { use_gpu: false }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := manager.Reload(); !changed || err != nil || applied {
+		t.Fatalf("external disable: changed=%v applied=%v err=%v", changed, applied, err)
+	}
+	if _, err := Parse([]byte("generation: { use_gpu: invalid }\n")); err == nil {
+		t.Fatal("invalid GPU boolean accepted")
+	}
+}
+
 func TestManagerMigratesLegacyValuesIntoYAMLWithoutDiscardingUnknownNodes(t *testing.T) {
 	manager, path := newManagerForTest(t, `# retained root comment
 nightly:

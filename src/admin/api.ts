@@ -1358,6 +1358,7 @@ export type ConfigSaveResult = {
   version: string;
   restartRequired: boolean;
   settings: {
+    useGPU: boolean;
     telegramEnabled: boolean;
     nightlyDisabled: boolean;
     nightlyStartTime: string;
@@ -1368,6 +1369,23 @@ export type ConfigSaveResult = {
     fingerprintConcurrency: number;
   };
 };
+
+export type GPUStatus = {
+  enabled: boolean;
+  checked: boolean;
+  available: boolean;
+  backend?: "vaapi" | "cuda";
+  device?: string;
+  name?: string;
+  reason?: string;
+  fallbackCount: number;
+};
+
+export const getGPUStatus = (signal?: AbortSignal) =>
+  request<GPUStatus>("/generation/gpu", { signal });
+
+export const probeGPU = (signal?: AbortSignal) =>
+  request<GPUStatus>("/generation/gpu/probe", { method: "POST", signal });
 
 export class ConfigConflictError extends Error {
   constructor(message = "config.yaml 已被其他操作修改") {

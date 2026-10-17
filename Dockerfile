@@ -29,10 +29,15 @@ FROM debian:bookworm-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      printf '%s\n' 'deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm non-free' \
+        > /etc/apt/sources.list.d/gpu-drivers.list; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     ffmpeg \
+    mesa-va-drivers \
     python3 \
     python3-bs4 \
     python3-lxml \
@@ -40,6 +45,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-socks \
     tar \
     tzdata \
+    && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      apt-get install -y --no-install-recommends intel-media-va-driver-non-free i965-va-driver; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -c "import requests, bs4, lxml, socks"

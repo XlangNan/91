@@ -1,0 +1,14 @@
+# 需先安装宿主机 NVIDIA 驱动和 NVIDIA Container Toolkit
+# docker compose -f docker-compose.yml -f docker-compose.gpu-nvidia.yml up -d
+# 然后在配置面板 → 媒体生成中开启 GPU 硬件加速
+services:
+  video-site-91:
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
