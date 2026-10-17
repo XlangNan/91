@@ -53,6 +53,12 @@ async function request<T>(
     } catch {
       // Keep a plain-text error response as-is.
     }
+    const contentType = res.headers.get("Content-Type")?.toLowerCase() ?? "";
+    if (contentType.includes("text/html") || /<!doctype\s+html\b|<html\b|<head\b|<body\b/i.test(message)) {
+      message = res.status >= 500
+        ? `网站服务暂时不可用（HTTP ${res.status}），请稍后重试`
+        : `请求失败（HTTP ${res.status}），请稍后重试`;
+    }
     throw new APIResponseError(res.status, message || `HTTP ${res.status}`, body);
   }
   if (res.status === 204) return undefined as T;
@@ -937,13 +943,14 @@ export type P115QRStatus = {
   cookie?: string;
 };
 
-export function startP115QRLogin() {
-  return request<P115QRSession>("/drives/p115/qr", { method: "POST" });
+export function startP115QRLogin(signal?: AbortSignal) {
+  return request<P115QRSession>("/drives/p115/qr", { method: "POST", signal });
 }
 
-export function getP115QRStatus(session: Pick<P115QRSession, "uid" | "time" | "sign">) {
+export function getP115QRStatus(session: Pick<P115QRSession, "uid" | "time" | "sign">, signal?: AbortSignal) {
   return request<P115QRStatus>("/drives/p115/qr/status", {
     method: "POST",
+    signal,
     body: JSON.stringify({
       uid: session.uid,
       time: session.time,

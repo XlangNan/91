@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { QrCode } from "lucide-react";
 import * as api from "../api";
 import { useToast } from "@/components/ToastContext";
@@ -10,46 +10,56 @@ export function P115QRCodeLogin({ onCookie }: { onCookie: (cookie: string) => vo
   const [starting, setStarting] = useState(false);
   const [pollingError, setPollingError] = useState("");
   const [completed, setCompleted] = useState(false);
+  const callbacksRef = useRef({ onCookie, show });
+  callbacksRef.current = { onCookie, show };
+  const startControllerRef = useRef<AbortController | null>(null);
+  const pollControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => startControllerRef.current?.abort(), []);
 
   async function start() {
+    startControllerRef.current?.abort();
+    pollControllerRef.current?.abort();
+    const controller = new AbortController();
+    startControllerRef.current = controller;
     setStarting(true);
     setSession(null);
     setStatus(null);
     setPollingError("");
     setCompleted(false);
     try {
-      const next = await api.startP115QRLogin();
+      const next = await api.startP115QRLogin(controller.signal);
+      if (controller.signal.aborted) return;
       setSession(next);
     } catch (e) {
-      show(e instanceof Error ? e.message : "生成二维码失败", "error");
+      if (controller.signal.aborted) return;
+      callbacksRef.current.show(e instanceof Error ? e.message : "生成二维码失败", "error");
     } finally {
-      setStarting(false);
+      if (!controller.signal.aborted) setStarting(false);
     }
   }
 
   useEffect(() => {
     if (!session || completed) return;
     const activeSession = session;
-    let stopped = false;
-    let inFlight = false;
+    const controller = new AbortController();
+    pollControllerRef.current = controller;
     let timer: number | undefined;
 
     async function poll() {
-      if (stopped || inFlight) return;
-      inFlight = true;
+      if (controller.signal.aborted) return;
       try {
-        const next = await api.getP115QRStatus(activeSession);
-        if (stopped) return;
+        const next = await api.getP115QRStatus(activeSession, controller.signal);
+        if (controller.signal.aborted) return;
         setStatus(next);
         setPollingError("");
         if (next.state === "success") {
-          stopped = true;
-          if (timer) window.clearInterval(timer);
           if (!next.cookie) {
             setPollingError("登录成功但未获取到 Cookie，请重新生成二维码");
             return;
           }
           setCompleted(true);
+          const { onCookie, show } = callbacksRef.current;
           onCookie(next.cookie);
           show("扫码成功，已填入 Cookie，保存后生效", "success");
           return;
@@ -59,24 +69,21 @@ export function P115QRCodeLogin({ onCookie }: { onCookie: (cookie: string) => vo
           next.state === "canceled" ||
           next.state === "error"
         ) {
-          stopped = true;
-          if (timer) window.clearInterval(timer);
+          return;
         }
       } catch (e) {
-        if (stopped) return;
+        if (controller.signal.aborted) return;
         setPollingError(e instanceof Error ? e.message : "查询扫码状态失败");
-      } finally {
-        inFlight = false;
       }
+      if (!controller.signal.aborted) timer = window.setTimeout(poll, 2000);
     }
 
     poll();
-    timer = window.setInterval(poll, 2000);
     return () => {
-      stopped = true;
-      if (timer) window.clearInterval(timer);
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [session, completed, onCookie, show]);
+  }, [session, completed]);
 
   return (
     <div className="admin-form__row">

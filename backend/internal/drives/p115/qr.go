@@ -10,7 +10,12 @@ import (
 	"time"
 
 	sdk "github.com/SheltonZhu/115driver/pkg/driver"
+	"github.com/go-resty/resty/v2"
 )
+
+// The status endpoint long-polls for about 30 seconds before returning an
+// unchanged state. Leave time for that response and the credential exchange.
+const p115QRTimeout = 45 * time.Second
 
 // QRConfig configures the short-lived client used by the admin QR login flow.
 // HTTPClient is injectable so callers can share transport/proxy settings and tests
@@ -20,7 +25,7 @@ type QRConfig struct {
 }
 
 type QRClient struct {
-	client *sdk.Pan115Client
+	httpClient *http.Client
 }
 
 // QRCodeSession contains only the temporary values required to poll a 115 QR
@@ -44,22 +49,35 @@ type QRCodeStatus struct {
 func NewQRClient(c QRConfig) *QRClient {
 	httpClient := c.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 20 * time.Second}
+		httpClient = &http.Client{Timeout: p115QRTimeout}
 	}
+	return &QRClient{httpClient: httpClient}
+}
+
+func (c *QRClient) newSDKClient(ctx context.Context) *sdk.Pan115Client {
 	// WithClient must run before UA: SetHttpClient replaces the underlying resty
 	// client, so applying UA afterwards ensures the 115 browser identity is kept.
 	client := sdk.New(
-		sdk.WithClient(httpClient),
+		sdk.WithClient(c.httpClient),
 		sdk.UA(sdk.UA115Browser),
 	)
-	return &QRClient{client: client}
+	// SDK methods create their own requests without accepting a context. Keep
+	// this middleware local to the operation so cancellation cannot affect a
+	// different QR session using the same HTTP client.
+	client.Client.OnBeforeRequest(func(_ *resty.Client, request *resty.Request) error {
+		request.SetContext(ctx)
+		return ctx.Err()
+	})
+	return client
 }
 
 func (c *QRClient) Generate(ctx context.Context) (QRCodeSession, error) {
+	ctx, cancel := context.WithTimeout(ctx, p115QRTimeout)
+	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return QRCodeSession{}, err
 	}
-	session, err := c.client.QRCodeStart()
+	session, err := c.newSDKClient(ctx).QRCodeStart()
 	if err != nil {
 		return QRCodeSession{}, fmt.Errorf("115 qr: generate: %w", err)
 	}
@@ -87,6 +105,8 @@ func (c *QRClient) Generate(ctx context.Context) (QRCodeSession, error) {
 // Poll checks the scan state and exchanges an approved session for the same web
 // Cookie format already consumed by Driver.Init (UID/CID/SEID/KID).
 func (c *QRClient) Poll(ctx context.Context, uid string, timestamp int64, sign string) (QRCodeStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, p115QRTimeout)
+	defer cancel()
 	uid = strings.TrimSpace(uid)
 	sign = strings.TrimSpace(sign)
 	if uid == "" {
@@ -103,7 +123,8 @@ func (c *QRClient) Poll(ctx context.Context, uid string, timestamp int64, sign s
 	}
 
 	session := &sdk.QRCodeSession{UID: uid, Time: timestamp, Sign: sign}
-	status, err := c.client.QRCodeStatus(session)
+	client := c.newSDKClient(ctx)
+	status, err := client.QRCodeStatus(session)
 	if err != nil {
 		if errors.Is(err, sdk.ErrQrcodeExpired) {
 			return QRCodeStatus{State: "expired", Status: -1, StatusText: "二维码已过期"}, nil
@@ -127,7 +148,7 @@ func (c *QRClient) Poll(ctx context.Context, uid string, timestamp int64, sign s
 	case status.IsCanceled():
 		return QRCodeStatus{State: "canceled", Status: status.Status, StatusText: "已取消登录"}, nil
 	case status.IsAllowed():
-		credential, loginErr := c.client.QRCodeLoginWithApp(session, sdk.LoginAppWeb)
+		credential, loginErr := client.QRCodeLoginWithApp(session, sdk.LoginAppWeb)
 		if loginErr != nil {
 			return QRCodeStatus{}, fmt.Errorf("115 qr: exchange credential: %w", loginErr)
 		}

@@ -3,12 +3,14 @@ package p115
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type qrRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -193,5 +195,50 @@ func TestQRClientPollValidatesSessionBeforeRequest(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
+
+func TestQRClientAllowsUpstreamLongPoll(t *testing.T) {
+	client := NewQRClient(QRConfig{})
+	client.httpClient.Transport = qrRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		deadline, ok := req.Context().Deadline()
+		if !ok || time.Until(deadline) <= 35*time.Second {
+			t.Fatal("QR request deadline must allow the upstream's 30-second long poll")
+		}
+		return qrJSONResponse(req, `{"state":1,"code":0,"data":{"status":0}}`), nil
+	})
+	if _, err := client.Poll(context.Background(), "uid", 1, "sign"); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+}
+
+func TestQRClientCancelsUpstreamRequests(t *testing.T) {
+	for _, stage := range []string{"generate", "status", "credential"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := qrTestClient(t, func(req *http.Request) (*http.Response, error) {
+				if stage == "credential" && req.URL.Path == "/get/status/" {
+					return qrJSONResponse(req, `{"state":1,"code":0,"data":{"status":2}}`), nil
+				}
+				cancel()
+				select {
+				case <-req.Context().Done():
+					return nil, req.Context().Err()
+				case <-time.After(time.Second):
+					t.Fatal("upstream request did not inherit caller cancellation")
+					return nil, context.DeadlineExceeded
+				}
+			})
+			var err error
+			if stage == "generate" {
+				_, err = client.Generate(ctx)
+			} else {
+				_, err = client.Poll(ctx, "uid", 1, "sign")
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want context.Canceled", err)
+			}
+		})
 	}
 }
