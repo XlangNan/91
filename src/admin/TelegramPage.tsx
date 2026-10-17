@@ -168,13 +168,6 @@ function TelegramWorkspace() {
               : "正在读取状态…"}
             {connection?.username && <span>@{connection.username}</span>}
           </p>
-          {connection?.error && <p className="tg-error">{connection.error}</p>}
-          {connection?.state === "connected" &&
-            !connection.config.allowedUserIds?.length && (
-              <p className="tg-note">
-                向机器人发送 /id，并在连接配置中添加允许的用户。
-              </p>
-            )}
           <dl className="tg-connection-metrics">
             <div>
               <dt>最近连接</dt>
@@ -267,9 +260,6 @@ function TelegramWorkspace() {
           !error && (
             <div className="tg-empty">
               <p>{filter ? "暂无记录" : "暂无导入记录"}</p>
-              {!filter && (
-                <span>连接机器人后，发送或转发一个视频即可开始。</span>
-              )}
             </div>
           )
         )}
