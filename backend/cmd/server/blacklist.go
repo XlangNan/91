@@ -50,6 +50,8 @@ func (a *App) deleteVideo(ctx context.Context, videoID string, deleteSource bool
 	if a == nil || a.cat == nil {
 		return api.DeleteVideoResult{}, sql.ErrNoRows
 	}
+	unlock := a.blacklistVideoLocks.lock(videoID)
+	defer unlock()
 	v, err := a.cat.GetVideo(ctx, videoID)
 	if err != nil {
 		return api.DeleteVideoResult{}, err
@@ -68,16 +70,19 @@ func (a *App) deleteVideo(ctx context.Context, videoID string, deleteSource bool
 		}
 	}
 
-	localDir := ""
-	if a.cfg != nil {
-		localDir = a.cfg.Storage.LocalPreviewDir
+	options := catalog.DeleteVideoTombstoneOptions{SourceDeleted: deletedSource}
+	if deleteSource {
+		localDir := ""
+		if a.cfg != nil {
+			localDir = a.cfg.Storage.LocalPreviewDir
+		}
+		if err := removeLocalVideoAssets(localDir, v); err != nil {
+			return api.DeleteVideoResult{}, fmt.Errorf("remove local assets for %s: %w", v.ID, err)
+		}
+	} else {
+		options.AssetCleanupAfter = time.Now().Add(videoDeletionGracePeriod)
 	}
-	if err := removeLocalVideoAssets(localDir, v); err != nil {
-		return api.DeleteVideoResult{}, fmt.Errorf("remove local assets for %s: %w", v.ID, err)
-	}
-	if err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{
-		SourceDeleted: deletedSource,
-	}); err != nil {
+	if err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, options); err != nil {
 		return api.DeleteVideoResult{}, err
 	}
 	return api.DeleteVideoResult{OK: true, DeletedSource: deletedSource}, nil
@@ -242,6 +247,12 @@ func (a *App) deleteBlacklistedVideoSource(ctx context.Context, snapshot *catalo
 		current.Reason != snapshot.Reason {
 		return true, nil
 	}
+	// Finish any retained-asset cleanup before removing the source. Otherwise
+	// an asset cleanup failure could leave an undoable tombstone whose source
+	// has already been deleted.
+	if err := a.cleanupDeletedVideoAssets(ctx, current.ID, time.Now(), true); err != nil {
+		return false, err
+	}
 	if err := a.removeDeletedVideoSourceFile(ctx, current); err != nil {
 		return false, err
 	}
@@ -400,10 +411,9 @@ func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) (bool
 	return true, nil
 }
 
-// restoreDeletedVideo coordinates provider inspection, the catalog state
-// transition, and application side effects under the same per-video lock used
-// by source deletion. Catalog returns the restored row so direct restores enter
-// the same generation queues as newly uploaded videos.
+// restoreDeletedVideo coordinates expired asset cleanup, provider inspection,
+// and restoration under the same per-video lock used by deletion. Undoing a
+// deletion retains ready assets; missing assets enter the normal queues.
 func (a *App) restoreDeletedVideo(ctx context.Context, videoID string) error {
 	if a == nil || a.cat == nil {
 		return sql.ErrNoRows
@@ -417,10 +427,23 @@ func (a *App) restoreDeletedVideo(ctx context.Context, videoID string) error {
 	if err := persistence.RLockContext(ctx); err != nil {
 		return err
 	}
+	if err := a.cleanupDeletedVideoAssets(ctx, videoID, time.Now(), false); err != nil {
+		persistence.RUnlock()
+		return err
+	}
 
-	result, err := a.cat.RestoreDeletedVideo(ctx, videoID, func(driveID, fileID string) (catalog.DeletedVideoSourceInfo, error) {
+	inspectSource := func(driveID, fileID string) (catalog.DeletedVideoSourceInfo, error) {
 		return a.inspectRestorableSource(ctx, driveID, fileID)
-	})
+	}
+	result, err := a.cat.RestoreDeletedVideo(ctx, videoID, inspectSource)
+	if errors.Is(err, catalog.ErrDeletedVideoAssetCleanupRequired) {
+		// The deadline may have passed between the initial cleanup check and
+		// the restore transaction. Finish cleanup before removing its owner.
+		err = a.cleanupDeletedVideoAssets(ctx, videoID, time.Now(), false)
+		if err == nil {
+			result, err = a.cat.RestoreDeletedVideo(ctx, videoID, inspectSource)
+		}
+	}
 	persistence.RUnlock()
 	if err != nil {
 		return err

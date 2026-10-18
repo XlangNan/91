@@ -1508,9 +1508,10 @@ type deletedVideoTagRestoreAssignment struct {
 }
 
 type DeleteVideoTombstoneOptions struct {
-	Reason           string
-	SourceDeleted    bool
-	CanonicalVideoID string
+	Reason            string
+	SourceDeleted     bool
+	CanonicalVideoID  string
+	AssetCleanupAfter time.Time
 }
 
 // DeleteVideoWithTombstone records that a video was removed, then removes the
@@ -1556,6 +1557,8 @@ func normalizeDeleteVideoTombstoneOptions(options DeleteVideoTombstoneOptions) D
 	options.CanonicalVideoID = strings.TrimSpace(options.CanonicalVideoID)
 	if options.Reason != DeletedVideoReasonDuplicate {
 		options.CanonicalVideoID = ""
+	} else {
+		options.AssetCleanupAfter = time.Time{}
 	}
 	return options
 }
@@ -1579,9 +1582,9 @@ func deleteVideoWithTombstoneTx(ctx context.Context, tx *sql.Tx, restoreVideo *V
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO deleted_videos (
   id, drive_id, file_id, parent_id, content_hash, file_name, size_bytes,
-  reason, source_deleted, canonical_video_id, restore_requested, restore_payload, deleted_at
+  reason, source_deleted, canonical_video_id, restore_requested, restore_payload, asset_cleanup_after, deleted_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   drive_id           = excluded.drive_id,
   file_id            = excluded.file_id,
@@ -1594,9 +1597,10 @@ ON CONFLICT(id) DO UPDATE SET
   canonical_video_id = excluded.canonical_video_id,
   restore_requested  = 0,
   restore_payload    = excluded.restore_payload,
+  asset_cleanup_after = excluded.asset_cleanup_after,
   deleted_at         = excluded.deleted_at`,
 		restoreVideo.ID, restoreVideo.DriveID, restoreVideo.FileID, restoreVideo.ParentID, restoreVideo.ContentHash, restoreVideo.FileName, restoreVideo.Size,
-		options.Reason, boolToInt(options.SourceDeleted), options.CanonicalVideoID, restorePayload, now); err != nil {
+		options.Reason, boolToInt(options.SourceDeleted), options.CanonicalVideoID, restorePayload, unixMilliOrZero(options.AssetCleanupAfter), now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM video_tags WHERE video_id = ?`, restoreVideo.ID); err != nil {
@@ -1668,18 +1672,19 @@ DELETE FROM drive_scan_misses
 // DeletedVideo 是黑名单（墓碑）表里的一条记录。原始视频行已删除，
 // 这里只保留扫盘去重和后台展示需要的最小字段；没有 title/封面/作者。
 type DeletedVideo struct {
-	ID               string `json:"id"`
-	DriveID          string `json:"driveId"`
-	FileID           string `json:"fileId"`
-	ParentID         string `json:"-"`
-	FileName         string `json:"fileName"`
-	Size             int64  `json:"size"`
-	Reason           string `json:"reason"`
-	SourceDeleted    bool   `json:"sourceDeleted"`
-	CanonicalVideoID string `json:"canonicalVideoId,omitempty"`
-	CanonicalTitle   string `json:"canonicalTitle,omitempty"`
-	RestorePolicy    string `json:"restorePolicy"`
-	DeletedAt        int64  `json:"deletedAt"` // unix 毫秒
+	ID                string `json:"id"`
+	DriveID           string `json:"driveId"`
+	FileID            string `json:"fileId"`
+	ParentID          string `json:"-"`
+	FileName          string `json:"fileName"`
+	Size              int64  `json:"size"`
+	Reason            string `json:"reason"`
+	SourceDeleted     bool   `json:"sourceDeleted"`
+	CanonicalVideoID  string `json:"canonicalVideoId,omitempty"`
+	CanonicalTitle    string `json:"canonicalTitle,omitempty"`
+	RestorePolicy     string `json:"restorePolicy"`
+	DeletedAt         int64  `json:"deletedAt"` // unix 毫秒
+	AssetCleanupAfter int64  `json:"-"`
 }
 
 // ListDeletedVideos 分页列出黑名单视频，按拉黑时间倒序。
@@ -1728,7 +1733,8 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 		        COALESCE(dv.canonical_video_id, ''),
 		        COALESCE(cv.title, ''),
 		        COALESCE(d.kind, ''),
-		        dv.deleted_at
+			        dv.deleted_at,
+			        dv.asset_cleanup_after
 		   FROM deleted_videos dv
 		   LEFT JOIN videos cv ON cv.id = dv.canonical_video_id
 		   LEFT JOIN drives d ON d.id = dv.drive_id`+whereSQL+`
@@ -1757,6 +1763,7 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 			&v.CanonicalTitle,
 			&driveKind,
 			&v.DeletedAt,
+			&v.AssetCleanupAfter,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -1898,20 +1905,18 @@ func (c *Catalog) PurgeDeletedVideo(ctx context.Context, id string) error {
 	return nil
 }
 
-// RemoveDeletedVideo 允许可扫描来源在后续任务中重新入库。本函数不会触发
-// 扫描或爬取。爬虫来源会保留墓碑和 seen 记录，并标记为待目录扫描恢复，
-// 使下一轮爬取仍将其当作已见来源跳过。direct 来源必须通过
-// RestoreDeletedVideo 提供源文件检查，避免 catalog-only 调用绕过安全边界。
+// RemoveDeletedVideo 在后悔期内当场恢复记录和资源引用；过期后允许可扫描
+// 来源在后续任务中重新入库，不会触发扫描或爬取。过期的 direct 来源必须
+// 通过 RestoreDeletedVideo 提供源文件检查，待清理资源必须先由应用层清理。
 func (c *Catalog) RemoveDeletedVideo(ctx context.Context, id string) error {
 	_, err := c.RestoreDeletedVideo(ctx, id, nil)
 	return err
 }
 
-// RestoreDeletedVideo removes or advances a tombstone according to its policy.
-// Direct restoration is the only branch that creates a catalog row, so it
-// requires provider-owned source inspection and returns the restored video for
-// application-level generation queues. Its row, tag assignments, and tombstone
-// deletion commit in one SQLite transaction.
+// RestoreDeletedVideo first attempts to undo an ordinary deletion while its
+// assets are retained. After the grace period, restoration follows the source
+// policy and direct restores require provider-owned source inspection. Pending
+// asset cleanup must finish before an expired tombstone can be removed.
 func (c *Catalog) RestoreDeletedVideo(
 	ctx context.Context,
 	id string,
@@ -1921,10 +1926,16 @@ func (c *Catalog) RestoreDeletedVideo(
 	if id == "" {
 		return DeletedVideoRestoreResult{}, sql.ErrNoRows
 	}
+	if result, restored, err := c.undoVideoDeletion(ctx, id); err != nil || restored {
+		return result, err
+	}
 
 	deleted, driveKind, _, err := c.deletedVideoForRestore(ctx, c.db, id)
 	if err != nil {
 		return DeletedVideoRestoreResult{}, err
+	}
+	if deleted.AssetCleanupAfter > 0 {
+		return DeletedVideoRestoreResult{}, ErrDeletedVideoAssetCleanupRequired
 	}
 	deleted.RestorePolicy = deletedVideoRestorePolicy(deleted, driveKind)
 	if deleted.RestorePolicy == DeletedVideoRestorePolicyNone {
@@ -2024,7 +2035,8 @@ SELECT dv.id,
        COALESCE(dv.source_deleted, 0),
        COALESCE(dv.restore_payload, ''),
        COALESCE(d.kind, ''),
-       COALESCE(dv.deleted_at, 0)
+       COALESCE(dv.deleted_at, 0),
+       dv.asset_cleanup_after
   FROM deleted_videos dv
   LEFT JOIN drives d ON d.id = dv.drive_id
  WHERE dv.id = ?
@@ -2040,6 +2052,7 @@ SELECT dv.id,
 		&restorePayload,
 		&driveKind,
 		&deleted.DeletedAt,
+		&deleted.AssetCleanupAfter,
 	)
 	if err != nil {
 		return nil, "", "", err
@@ -4687,6 +4700,9 @@ func deletedVideoRestorePolicy(v *DeletedVideo, driveKind string) string {
 		return DeletedVideoRestorePolicyNone
 	}
 	if strings.TrimSpace(v.DriveID) == "local-upload" || strings.TrimSpace(v.DriveID) == TelegramLocalDriveID {
+		return DeletedVideoRestorePolicyDirect
+	}
+	if v.AssetCleanupAfter > time.Now().UnixMilli() {
 		return DeletedVideoRestorePolicyDirect
 	}
 	if strings.TrimSpace(driveKind) == "scriptcrawler" {

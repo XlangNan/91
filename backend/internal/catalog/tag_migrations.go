@@ -192,6 +192,12 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 	if err := c.addColumnIfMissing(ctx, "deleted_videos", "restore_payload", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := c.addColumnIfMissing(ctx, "deleted_videos", "asset_cleanup_after", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := c.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_deleted_videos_asset_cleanup ON deleted_videos(asset_cleanup_after) WHERE asset_cleanup_after > 0`); err != nil {
+		return err
+	}
 	if err := c.purgeLegacySourceDeletedTombstones(ctx); err != nil {
 		return err
 	}

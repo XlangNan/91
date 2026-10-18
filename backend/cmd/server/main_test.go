@@ -3579,7 +3579,7 @@ func TestCleanupDriveVideosForDeleteRemovesRowsAndGeneratedAssetsOnly(t *testing
 	}
 }
 
-func TestDeleteVideoRemovesGeneratedAssetsKeepsLocalOriginalAndTombstones(t *testing.T) {
+func TestDeleteVideoDefersGeneratedAssetsKeepsLocalOriginalAndTombstones(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	localDir := filepath.Join(root, "previews")
@@ -3659,6 +3659,25 @@ func TestDeleteVideoRemovesGeneratedAssetsKeepsLocalOriginalAndTombstones(t *tes
 	}
 	if !deleted {
 		t.Fatal("deleted video tombstone missing")
+	}
+	items, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("list tombstones = %#v, %v", items, err)
+	}
+	deadline := time.UnixMilli(items[0].AssetCleanupAfter)
+	if delay := deadline.Sub(time.UnixMilli(items[0].DeletedAt)); delay < videoDeletionGracePeriod-time.Second || delay > videoDeletionGracePeriod {
+		t.Fatalf("cleanup delay = %s, want %s", delay, videoDeletionGracePeriod)
+	}
+	if err := app.cleanupExpiredDeletedVideoAssets(ctx, deadline.Add(-time.Millisecond)); err != nil {
+		t.Fatalf("cleanup before deadline: %v", err)
+	}
+	for _, path := range []string{previewPath, thumbPath, backgroundPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("generated asset %s removed during grace period: %v", path, err)
+		}
+	}
+	if err := app.cleanupExpiredDeletedVideoAssets(ctx, deadline); err != nil {
+		t.Fatalf("cleanup at deadline: %v", err)
 	}
 	for _, path := range []string{previewPath, thumbPath, backgroundPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {

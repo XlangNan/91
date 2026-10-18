@@ -224,6 +224,7 @@ func main() {
 		log.Printf("[telegram-upload] startup source cleanup: %v", err)
 	}
 	go app.runFingerprintReconciler(ctx)
+	go app.runDeletedVideoAssetCleanup(ctx)
 
 	telegramService := telegram.NewIntegration(cat, configManager, app.localUploadDir(), cfg.RemoteUpload.DiskReserveBytes)
 	defer func() {

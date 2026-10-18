@@ -36,10 +36,10 @@ func (a *App) enqueueUploadedVideo(ctx context.Context, v *catalog.Video) {
 	if thumbWorker != nil && v.ThumbnailURL == "" {
 		thumbWorker.Enqueue(v)
 	}
-	if worker != nil && a.previewEnabled() {
+	if worker != nil && a.previewEnabled() && v.PreviewStatus != "ready" {
 		worker.Enqueue(v)
 	}
-	if fingerprintWorker != nil {
+	if fingerprintWorker != nil && v.FingerprintStatus != "ready" {
 		fingerprintWorker.Enqueue(v)
 	}
 }

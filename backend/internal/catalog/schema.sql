@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
     canonical_video_id TEXT NOT NULL DEFAULT '',
     restore_requested  INTEGER NOT NULL DEFAULT 0,
     restore_payload    TEXT NOT NULL DEFAULT '',
+    asset_cleanup_after INTEGER NOT NULL DEFAULT 0, -- 普通删除的资源清理截止时间；0 表示没有待清理资源
     deleted_at         INTEGER NOT NULL
 );
 

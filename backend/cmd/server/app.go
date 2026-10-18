@@ -105,8 +105,8 @@ type App struct {
 	// the catalog and purges each one after a successful provider delete.
 	blacklistSourceDeleteMu    sync.Mutex
 	blacklistSourceDeleteState api.BlacklistSourceDeleteStatus
-	// blacklistVideoLocks serializes restore and source deletion for the same
-	// tombstone without making unrelated videos wait on a slow provider call.
+	// blacklistVideoLocks serializes deletion, restore, and asset/source cleanup
+	// for one video without making unrelated videos wait on a slow provider call.
 	blacklistVideoLocks videoOperationLocks
 
 	// tagJobMu protects the admin-visible tag job status and admits one job at a time.
