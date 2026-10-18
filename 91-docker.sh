@@ -273,11 +273,11 @@ usage() {
     install|update)
       printf 'Usage: bash 91-docker.sh %s [--image IMAGE]\n\n' "$action"
       if [[ "$action" == install ]]; then
-        printf 'Install a new deployment; refuse to overwrite existing configuration.\n\n'
+        printf 'Install 91 (default: stable); refuse to overwrite existing config.\n\n'
       else
-        printf 'Update 91 image and deployment templates; preserve existing settings.\n\n'
+        printf 'Update 91 using its configured image; keep config and data.\n\n'
       fi
-      printf '      --image IMAGE  Image or tag (install: stable; update: reuse the configured image tag; main: development)\n'
+      printf '  --image IMAGE          Image reference, stable or main\n'
       ;;
     gpu)
       cat <<'EOF'
@@ -291,14 +291,14 @@ EOF
       cat <<'EOF'
 Usage: bash 91-docker.sh telegram
 
-Deploy the local Telegram Bot API without updating the 91 image.
+Set up the local Telegram Bot API; keep the current 91 image.
 EOF
       ;;
     reset-password)
       cat <<'EOF'
 Usage: bash 91-docker.sh reset-password
 
-Reset an existing user's password interactively (requires 91 to be running).
+Reset a user's password. Requires 91 to be running.
 EOF
       ;;
     uninstall)
@@ -314,18 +314,18 @@ EOF
       cat <<'EOF'
 Usage: bash 91-docker.sh COMMAND [options]
 
-Manage 91 Docker.
+Manage the 91 Docker deployment.
 
-  install [--image IMAGE]  Install 91 (default: stable tage)
-  update [--image IMAGE]   Update 91 (default: reuse the configured image tag)
+  install [--image IMAGE]  Install 91 (default: stable)
+  update [--image IMAGE]   Update 91 (default: configured image)
   uninstall               Remove the deployment, images, configuration and application data (you'd better know what you're doing)
-  reset-password          Reset an existing user's password interactively (requires 91 to be running)
+  reset-password          Reset a user's password (91 must be running)
   gpu                     Configure GPU access (select if multiple)
-  telegram                Deploy the local Telegram Bot API
+  telegram                Set up the local Telegram Bot API
 EOF
       ;;
   esac
-  printf '\n  -h, --help              Show help for this command\n'
+  printf '\n  -h, --help             Show command help\n'
 }
 
 parse_args() {
