@@ -62,6 +62,7 @@ import {
 import { useShortsSlideGestures } from "@/shorts/useShortsSlideGestures";
 import { useShortsDesktopLayout } from "@/shorts/useShortsDesktopLayout";
 import { useShortsPlaybackPreferences } from "@/shorts/useShortsPlaybackPreferences";
+import { useShortsAudio } from "@/shorts/useShortsAudio";
 import { restoreShortsPlaybackRate } from "@/shorts/playbackRate";
 import { ShortsPlaybackControls } from "@/shorts/ShortsPlaybackControls";
 import { ShortsTooltip } from "@/shorts/ShortsTooltip";
@@ -157,8 +158,8 @@ function ShortsPlayback({
   const { isAdmin } = useAuth();
   // 当前在视口里的视频索引
   const [activeIndex, setActiveIndex] = useState(0);
-  // 是否静音；首次必须静音才能 autoplay，用户点击后切换
-  const [muted, setMuted] = useState(true);
+  // 优先按用户偏好有声播放，被浏览器拦截时才临时静音。
+  const { muted, setMuted, playWithAudioFallback } = useShortsAudio();
   const isDesktop = useShortsDesktopLayout();
   const [autoAdvance, setAutoAdvance] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
@@ -233,7 +234,7 @@ function ShortsPlayback({
       }
     }
     setMuted(next);
-  }, [muted, useIOSSharedVideo, isDesktop, volume]);
+  }, [muted, useIOSSharedVideo, isDesktop, volume, setMuted]);
 
   const handleVolumeChange = useCallback((nextVolume: number) => {
     const next = clamp(nextVolume, 0, 1);
@@ -246,7 +247,7 @@ function ShortsPlayback({
     }
     setVolume(next);
     setMuted(next === 0);
-  }, []);
+  }, [setMuted]);
 
   // 组件卸载时清理 HUD 定时器
   useEffect(() => {
@@ -1375,6 +1376,7 @@ function ShortsPlayback({
                     : undefined
                 }
                 muted={muted}
+                playWithAudioFallback={playWithAudioFallback}
                 onToggleMute={handleMuteButtonClick}
                 volume={isDesktop ? volume : undefined}
                 onVolumeChange={handleVolumeChange}
@@ -1511,6 +1513,7 @@ type SlideProps = {
   /** 持久 video 当前应移动到的 slide 插槽 */
   sharedVideoSlotRef?: (el: HTMLDivElement | null) => void;
   muted: boolean;
+  playWithAudioFallback: ReturnType<typeof useShortsAudio>["playWithAudioFallback"];
   onToggleMute: () => void;
   volume: number | undefined;
   onVolumeChange: (volume: number) => void;
@@ -1581,6 +1584,7 @@ function ShortsSlideImpl({
   sharedVideoRef,
   sharedVideoSlotRef,
   muted,
+  playWithAudioFallback,
   onToggleMute,
   volume,
   onVolumeChange,
@@ -1949,7 +1953,7 @@ function ShortsSlideImpl({
 
   // 每次成为当前屏都明确发起播放。Safari 可能在 src/load
   // 切换时以 AbortError 中断第一次请求，因此在 canplay/loadeddata
-  // 后会再试；NotAllowedError 则立即显示可点击的播放态。
+  // 后会再试；有声播放被策略拒绝时先重试静音，仍被拒绝才显示播放按钮。
   useEffect(() => {
     const video = getVideoElement();
     if (!video || !isActive || !shouldLoad) return;
@@ -1982,32 +1986,14 @@ function ShortsSlideImpl({
 
     const attemptPlay = () => {
       if (!canContinue() || !video.paused) return;
-      applyVideoMutedState(video, mutedRef.current);
       video.playsInline = true;
-      try {
-        video.defaultMuted = mutedRef.current;
-      } catch {
-        // ignore
-      }
 
       setPaused(false);
       if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
         setIsBuffering(true);
       }
 
-      let request: Promise<void> | undefined;
-      try {
-        request = video.play();
-      } catch (error: unknown) {
-        if (getMediaErrorName(error) === "NotAllowedError") {
-          markPlayBlocked();
-        } else {
-          markPlayFailed();
-        }
-        return;
-      }
-
-      request?.catch((error: unknown) => {
+      playWithAudioFallback(video, canContinue).catch((error: unknown) => {
         if (!canContinue()) return;
         const errorName = getMediaErrorName(error);
         if (errorName === "AbortError" && retryCount < 2) {
@@ -2057,6 +2043,7 @@ function ShortsSlideImpl({
     isVideoPausedByUser,
     item.id,
     onActiveNeedsPriority,
+    playWithAudioFallback,
     shouldLoad,
     updateCurrentTime,
     usesSharedVideo,

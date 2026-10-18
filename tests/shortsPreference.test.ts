@@ -213,7 +213,7 @@ test("shorts preserves a user pause while the active video is still loading", ()
 
 test("shorts retries interrupted active playback and exposes rejected autoplay", () => {
   assert.match(shortsPageSource, /const attemptPlay = \(\) => \{/);
-  assert.match(shortsPageSource, /request = video\.play\(\);/);
+  assert.match(shortsPageSource, /playWithAudioFallback\(video, canContinue\)\.catch/);
   assert.match(
     shortsPageSource,
     /errorName === "AbortError" && retryCount < 2[\s\S]*?window\.setTimeout\(attemptPlay, retryCount \* 120\)/
