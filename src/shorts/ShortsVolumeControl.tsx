@@ -26,7 +26,11 @@ export function ShortsVolumeControl({ muted, volume, onToggleMute, onVolumeChang
       onPointerLeave={(event) => {
         if (event.pointerType === "mouse" && !draggingRef.current && !keyboardRef.current) setOpen(false);
       }}
-      onFocus={() => setOpen(true)}
+      onFocus={(event) => {
+        // 返回标签页时恢复的鼠标焦点不应重新展开浮层。
+        keyboardRef.current = event.target.matches(":focus-visible");
+        if (keyboardRef.current) setOpen(true);
+      }}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
       }}
