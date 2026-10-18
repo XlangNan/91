@@ -13,6 +13,13 @@ const service = "video-site-91";
 const oldImage = `sha256:${"a".repeat(64)}`;
 const newImage = `sha256:${"b".repeat(64)}`;
 const oldTelegramImage = `sha256:${"c".repeat(64)}`;
+const vaapiDevice = "/dev/dri/renderD128";
+const nvidiaDevice = "GPU-11111111-1111-1111-1111-111111111111";
+type GPUChoice = { mode: "vaapi" | "nvidia"; device: string; label: string };
+const defaultGPUs: Record<string, GPUChoice> = {
+  vaapi: { mode: "vaapi", device: vaapiDevice, label: "Intel GPU" },
+  nvidia: { mode: "nvidia", device: nvidiaDevice, label: "NVIDIA RTX 4060" },
+};
 const dockerPath = spawnSync("bash", ["-c", "command -v docker"], { encoding: "utf8" }).stdout?.trim();
 const composeHelp = dockerPath && spawnSync(dockerPath, ["compose", "config", "--help"], { encoding: "utf8" });
 const hasCompose = composeHelp && composeHelp.status === 0 && composeHelp.stdout.includes("--no-env-resolution");
@@ -138,7 +145,13 @@ for path in "$@"; do
 done
 exec /bin/rm "$@"
 `, { mode: 0o755 });
-  writeFileSync(join(bin, "nvidia-smi"), '#!/bin/sh\nif [ "$TEST_NVIDIA_MODE" = ready ]; then printf "RTX 4060\\n"; else exit 1; fi\n', { mode: 0o755 });
+  writeFileSync(join(bin, "nvidia-smi"), `#!/bin/sh
+if [ "$TEST_NVIDIA_MODE" = ready ]; then
+  [ "$1" = --query-gpu=uuid,name ] || exit 2
+  printf '%s\\n' "\${TEST_NVIDIA_DEVICES:-${nvidiaDevice}, NVIDIA RTX 4060}"
+else exit 1
+fi
+`, { mode: 0o755 });
   writeFileSync(join(bin, "timeout"), '#!/bin/sh\nif [ "$TEST_NVIDIA_MODE" = timeout ]; then exit 124; fi\nexec /usr/bin/timeout "$@"\n', { mode: 0o755 });
   // An inherited COMPOSE_FILE must never redirect a test to a real deployment.
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -152,7 +165,7 @@ exec /bin/rm "$@"
     TEST_OLD_IMAGE: oldImage,
     TEST_NEW_IMAGE: newImage,
     TEST_OLD_TELEGRAM_IMAGE: oldTelegramImage,
-    TEST_READY_GPU: "",
+    TEST_GPU_CHOICES: "[]",
     TEST_NVIDIA_MODE: "none",
   };
   const stateFile = join(root, "engine.json");
@@ -169,8 +182,11 @@ exec /bin/rm "$@"
       return JSON.parse(result.stdout);
     },
     run(args: string[] = [], overrides: Record<string, string> = {}, input?: string) {
-      return spawnSync("bash", ["-c", 'source "$1"; detect_host_gpu() { read -r -a READY_GPU <<< "$TEST_READY_GPU"; }; main "${@:2}"', "bash", script, ...args], {
-        cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000, input,
+      const choices = overrides.TEST_GPU_CHOICES ?? JSON.stringify(
+        (overrides.TEST_READY_GPU ?? "").split(/\s+/).filter(Boolean).map((mode) => defaultGPUs[mode])
+      );
+      return spawnSync("bash", ["-c", 'source "$1"; detect_host_gpu() { GPU_CHOICES="$TEST_GPU_CHOICES"; }; main "${@:2}"', "bash", script, ...args], {
+        cwd: root, env: { ...env, ...overrides, TEST_GPU_CHOICES: choices }, encoding: "utf8", timeout: 30_000, input,
       });
     },
     functions(program: string, overrides: Record<string, string> = {}) {
@@ -629,7 +645,7 @@ test("Telegram prompts visibly for missing parameters and retries invalid input"
   if (spawnSync("script", ["--version"]).status !== 0) return t.skip("PTY utility script is unavailable");
   const f = fixture(t);
   const entry = join(f.root, "interactive.sh");
-  writeFileSync(entry, 'source "$TEST_SCRIPT"\ndetect_host_gpu() { READY_GPU=(); }\nmain telegram\n');
+  writeFileSync(entry, 'source "$TEST_SCRIPT"\ndetect_host_gpu() { GPU_CHOICES="[]"; }\nmain telegram\n');
   const result = spawnSync("script", ["-q", "-e", "-c", `bash '${entry}'`, "/dev/null"], {
     cwd: f.root, env: { ...f.env, TEST_SCRIPT: script }, encoding: "utf8", timeout: 30_000,
     input: `invalid\n${telegramCredentials.TELEGRAM_API_ID}\ninvalid\n${telegramCredentials.TELEGRAM_API_HASH}\n`,
@@ -925,7 +941,7 @@ test("GPU configuration and updates preserve Compose port and storage settings",
   writeFileSync(f.target, JSON.stringify(config));
   succeeded(f.run(["gpu"], { TEST_READY_GPU: "vaapi" }));
   const before = f.raw().services[service];
-  assert.equal(before.devices[0].source, "/dev/dri");
+  assert.equal(before.devices[0].source, vaapiDevice);
   assert.equal(before.ports[0].published, "8182");
   assert.equal(before.volumes[0].source, "./private data");
   succeeded(f.run(["update"], { TEST_READY_GPU: "vaapi" }));
@@ -1093,7 +1109,7 @@ id() { printf '%s\\n' "$TEST_INSTALL_UID"; }
     calls: () => existsSync(packageLog) ? readFileSync(packageLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [],
     installed: () => existsSync(join(bin, "jq")),
     bootstrap(overrides: Record<string, string> = {}, fullUpdate = false) {
-      return f.functions(`${setup}\n${fullUpdate ? 'detect_host_gpu() { READY_GPU=(); }; main update' : 'ensure_jq; printf "bootstrap complete\\n"'}`, {
+      return f.functions(`${setup}\n${fullUpdate ? 'detect_host_gpu() { GPU_CHOICES="[]"; }; main update' : 'ensure_jq; printf "bootstrap complete\\n"'}`, {
         TEST_PACKAGE_LOG: packageLog,
         TEST_PACKAGE_MANAGER: "apt-get",
         TEST_REAL_JQ: realJq,
@@ -1242,13 +1258,106 @@ test("NVIDIA preparation updates one Compose file and preserves the app GPU swit
   assert.equal(f.state().calls.find((args) => args[0] === "create")?.at(-1), oldImage);
 });
 
-test("VAAPI preparation preserves other devices and takes priority over NVIDIA", requiresCompose, (t) => {
+const secondVaapiGPU: GPUChoice = { mode: "vaapi", device: "/dev/dri/renderD129", label: "AMD GPU" };
+const secondNvidiaGPU: GPUChoice = { mode: "nvidia", device: "GPU-22222222-2222-2222-2222-222222222222", label: "NVIDIA RTX 4090" };
+
+for (const [name, choices] of [
+  ["NVIDIA over VAAPI", [defaultGPUs.vaapi, defaultGPUs.nvidia]],
+  ["VAAPI over NVIDIA", [defaultGPUs.nvidia, defaultGPUs.vaapi]],
+  ["one of multiple VAAPI GPUs", [defaultGPUs.vaapi, secondVaapiGPU]],
+  ["one of multiple NVIDIA GPUs", [defaultGPUs.nvidia, secondNvidiaGPU]],
+] as const) {
+  test(`GPU selection lets users choose ${name} and exposes only that card`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const config = parse(readFileSync(f.target, "utf8"));
+    Object.assign(config.services[service], {
+      devices: ["/dev/fuse:/dev/fuse", "/dev/dri:/dev/dri", "/dev/nvidia0:/dev/nvidia0", "/tmp/host-render:/dev/dri/renderD130"],
+      runtime: "nvidia",
+      gpus: "all",
+      environment: { ...config.services[service].environment, NVIDIA_VISIBLE_DEVICES: "all", CUDA_VISIBLE_DEVICES: "2" },
+    });
+    writeFileSync(f.target, JSON.stringify(config));
+    const result = f.run(["gpu"], { TEST_GPU_CHOICES: JSON.stringify(choices) }, "2\n");
+    succeeded(result);
+    const selected = choices[1];
+    for (const choice of choices) assert.ok(result.stderr.includes(choice.device));
+    assert.ok(result.stdout.includes(selected.device));
+    const s = f.raw().services[service];
+    assert.equal(s.runtime, undefined);
+    assert.equal(s.gpus, undefined);
+    assert.equal(s.environment?.NVIDIA_VISIBLE_DEVICES, undefined);
+    assert.equal(s.environment?.CUDA_VISIBLE_DEVICES, undefined);
+    assert.deepEqual(s.devices, [
+      { source: "/dev/fuse", target: "/dev/fuse", permissions: "rwm" },
+      ...(selected.mode === "vaapi" ? [{ source: selected.device, target: selected.device, permissions: "rwm" }] : []),
+    ]);
+    if (selected.mode === "nvidia") {
+      assert.deepEqual(s.deploy.resources.reservations.devices, [{ driver: "nvidia", device_ids: [selected.device], capabilities: ["gpu"] }]);
+    } else {
+      assert.equal(s.deploy, undefined);
+    }
+    assert.equal(f.state().starts[0].services[service].image, oldImage);
+    assert.equal(f.state().pulled, false);
+  });
+}
+
+test("GPU selection retries invalid input without silently choosing a default", requiresCompose, (t) => {
   const f = fixture(t);
-  writeFileSync(f.target, readFileSync(f.target, "utf8") + "    devices:\n      - /dev/fuse:/dev/fuse\n");
-  succeeded(f.run(["gpu"], { TEST_READY_GPU: "vaapi nvidia" }));
-  const s = f.raw().services[service];
-  assert.deepEqual(s.devices.map((device: any) => device.source).sort(), ["/dev/dri", "/dev/fuse"]);
-  assert.equal(s.deploy, undefined);
+  const result = f.run(["gpu"], { TEST_READY_GPU: "vaapi nvidia" }, "\n0\ninvalid\n999999999999999999999999999999\n2\n");
+  succeeded(result);
+  assert.equal(result.stderr.match(/Enter a number/g)?.length, 4);
+  assert.deepEqual(f.raw().services[service].deploy.resources.reservations.devices[0].device_ids, [nvidiaDevice]);
+});
+
+test("GPU selection works in an interactive terminal", requiresCompose, (t) => {
+  if (spawnSync("script", ["--version"]).status !== 0) return t.skip("PTY utility script is unavailable");
+  const f = fixture(t);
+  const entry = join(f.root, "interactive-gpu.sh");
+  writeFileSync(entry, 'source "$TEST_SCRIPT"\ndetect_host_gpu() { GPU_CHOICES="$TEST_GPU_CHOICES"; }\nmain gpu\n');
+  const result = spawnSync("script", ["-q", "-e", "-c", `bash '${entry}'`, "/dev/null"], {
+    cwd: f.root,
+    env: { ...f.env, TEST_SCRIPT: script, TEST_GPU_CHOICES: JSON.stringify([defaultGPUs.vaapi, defaultGPUs.nvidia]) },
+    encoding: "utf8", timeout: 15_000, input: "2\n",
+  });
+  succeeded(result);
+  assert.match(result.stdout, /Available GPUs/);
+  assert.match(result.stdout, /Select GPU/);
+  assert.deepEqual(f.raw().services[service].deploy.resources.reservations.devices[0].device_ids, [nvidiaDevice]);
+});
+
+for (const input of [undefined, "q\n", "invalid\n"]) {
+  test(`GPU selection aborts without deployment changes on ${input === undefined ? "EOF" : JSON.stringify(input)}`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const original = readFileSync(f.target, "utf8");
+    const result = f.run(["gpu"], { TEST_READY_GPU: "vaapi nvidia" }, input);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /GPU selection cancelled before deployment changes/);
+    assert.equal(readFileSync(f.target, "utf8"), original);
+    assert.deepEqual(f.backups(), []);
+    assert.deepEqual(f.state().starts, []);
+    assert.equal(f.state().calls.some((args) => ["pull", "create", "cp"].includes(args[0])), false);
+  });
+}
+
+test("Ctrl+C at GPU selection preserves configuration and removes temporary files", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  const result = f.functions(`
+detect_host_gpu() {
+  add_gpu_choice vaapi /dev/dri/renderD128 Intel
+  add_gpu_choice nvidia ${nvidiaDevice} NVIDIA
+}
+read() {
+  if [[ "$#" == 2 && "$1" == -r && "$2" == choice ]]; then kill -INT "$$"; return 130; fi
+  builtin read "$@"
+}
+main gpu
+`);
+  assert.equal(result.status, 130, `${result.stdout}\n${result.stderr}`);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.deepEqual(f.backups(), []);
+  assert.deepEqual(f.state().starts, []);
+  assert.equal(readdirSync(f.root).some((name) => name.startsWith(".docker-update.")), false);
 });
 
 for (const [previous, available, selected] of [
@@ -1269,10 +1378,10 @@ for (const [previous, available, selected] of [
       site.devices.push("/dev/dri:/dev/dri");
     }
     writeFileSync(f.target, JSON.stringify(config));
-    succeeded(f.run(["gpu"], { TEST_READY_GPU: available }));
+    succeeded(f.run(["gpu"], { TEST_READY_GPU: available }, available.includes(" ") ? "1\n" : undefined));
     const after = f.raw().services[service];
     assert.deepEqual(after.devices.map((device: any) => device.source).sort(),
-      selected === "vaapi" ? ["/dev/dri", "/dev/fuse"] : ["/dev/fuse"]);
+      selected === "vaapi" ? [vaapiDevice, "/dev/fuse"] : ["/dev/fuse"]);
     assert.equal(after.runtime, undefined);
     assert.equal(after.environment.NVIDIA_VISIBLE_DEVICES, undefined);
     if (selected === "nvidia") {
@@ -1300,14 +1409,23 @@ for (const detected of ["nvidia", "vaapi"]) {
   });
 }
 
-test("matching NVIDIA device IDs are preserved and missing capabilities are configured", requiresCompose, (t) => {
+test("NVIDIA selection replaces stale device IDs and configures missing capabilities", requiresCompose, (t) => {
   const f = fixture(t);
   const base = parse(readFileSync(f.target, "utf8"));
   base.services[service].deploy = { resources: { reservations: { devices: [{ driver: "nvidia", device_ids: ["2"], capabilities: ["gpu"] }] } } };
   writeFileSync(f.target, JSON.stringify(base));
   succeeded(f.run(["gpu"], { TEST_READY_GPU: "nvidia" }));
-  assert.deepEqual(f.raw().services[service].deploy, base.services[service].deploy);
+  assert.deepEqual(f.raw().services[service].deploy.resources.reservations.devices[0].device_ids, [nvidiaDevice]);
   assert.equal(f.raw().services[service].environment.NVIDIA_DRIVER_CAPABILITIES, "compute,video,utility");
+});
+
+test("NVIDIA selection preserves explicitly enabled driver capabilities", requiresCompose, (t) => {
+  const f = fixture(t);
+  const config = parse(readFileSync(f.target, "utf8"));
+  config.services[service].environment.NVIDIA_DRIVER_CAPABILITIES = "all";
+  writeFileSync(f.target, JSON.stringify(config));
+  succeeded(f.run(["gpu"], { TEST_READY_GPU: "nvidia" }));
+  assert.equal(f.raw().services[service].environment.NVIDIA_DRIVER_CAPABILITIES, "all");
 });
 
 test("host networking does not gain deliberately omitted ports or mounts", requiresCompose, (t) => {
@@ -1412,6 +1530,35 @@ test("GPU conflicts in overlays abort without changing either file", requiresCom
   assert.equal(readFileSync(overlay, "utf8"), overlayOriginal);
 });
 
+for (const conflict of ["extra VAAPI device", "different NVIDIA device", "NVIDIA visibility", "CUDA visibility", "NVIDIA capabilities", "privileged access", "GPU volume mount"]) {
+  test(`an overlay cannot override the selected GPU through ${conflict}`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const overlay = join(f.root, "gpu-overlay.yml");
+    const mode = conflict === "extra VAAPI device" ? "vaapi" : "nvidia";
+    const settings = {
+      "extra VAAPI device": { devices: ["/dev/dri:/dev/dri"] },
+      "different NVIDIA device": { deploy: { resources: { reservations: { devices: [{ driver: "nvidia", device_ids: [secondNvidiaGPU.device], capabilities: ["gpu"] }] } } } },
+      "NVIDIA visibility": { environment: { NVIDIA_VISIBLE_DEVICES: "all" } },
+      "CUDA visibility": { environment: { CUDA_VISIBLE_DEVICES: "1" } },
+      "NVIDIA capabilities": { environment: { NVIDIA_DRIVER_CAPABILITIES: "utility" } },
+      "privileged access": { privileged: true },
+      "GPU volume mount": { volumes: ["/dev/dri:/dev/dri"] },
+    }[conflict];
+    writeFileSync(overlay, JSON.stringify({ services: { [service]: settings } }));
+    writeFileSync(join(f.root, ".env"), `COMPOSE_FILE=${f.target}:${overlay}\n`);
+    const original = readFileSync(f.target, "utf8");
+    const other = readFileSync(overlay, "utf8");
+
+    const result = f.run(["gpu"], { TEST_READY_GPU: mode });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Compose settings override the selected GPU/);
+    assert.equal(readFileSync(f.target, "utf8"), original);
+    assert.equal(readFileSync(overlay, "utf8"), other);
+    assert.deepEqual(f.state().starts, []);
+    assert.deepEqual(f.backups(), []);
+  });
+}
+
 test("explicit image and project name from dotenv are retained", requiresCompose, (t) => {
   const f = fixture(t);
   writeFileSync(join(f.root, ".env"), "COMPOSE_PROJECT_NAME=existing-project\n");
@@ -1443,19 +1590,20 @@ test("no detected GPU removes GPU access and preserves unrelated resources", req
 });
 
 const probeHost = `
-list_render_devices() { if [[ -n "\${TEST_RENDER_DEVICE:-}" ]]; then printf '%s\\n' "$TEST_RENDER_DEVICE"; fi; }
+list_render_devices() { printf '%s\\n' "\${TEST_RENDER_DEVICES:-\${TEST_RENDER_DEVICE:-}}"; }
 render_vendor() { printf '%s\\n' "\${TEST_RENDER_VENDOR:-0x8086}"; }
+render_device_name() { printf 'Intel GPU\\n'; }
 pci_gpu_vendors() { printf '%s\\n' "\${TEST_PCI_VENDORS:-}"; }
 docker info --format '{{json .}}' > "$TEST_DEPLOYMENT/info.json"
 detect_host_gpu "$TEST_DEPLOYMENT/info.json"
-printf '%s\\n' "\${READY_GPU[@]}" | jq -Rsc 'split("\\n") | map(select(length > 0))'
+printf '%s\\n' "$GPU_CHOICES"
 `;
 
 test("NVIDIA detection requires a working driver and Docker runtime", requiresCompose, (t) => {
   const f = fixture(t);
   let result = f.functions(probeHost, { TEST_NVIDIA_MODE: "ready" });
   succeeded(result);
-  assert.deepEqual(JSON.parse(result.stdout.trim()), ["nvidia"]);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), [defaultGPUs.nvidia]);
   f.changeState({ info: { Runtimes: {}, OperatingSystem: "Debian" } });
   result = f.functions(probeHost, { TEST_NVIDIA_MODE: "ready" });
   succeeded(result);
@@ -1476,7 +1624,7 @@ test("VAAPI detection checks vendor and rootless device access", requiresCompose
   const f = fixture(t);
   let result = f.functions(probeHost, { TEST_RENDER_DEVICE: "/missing-render-device" });
   succeeded(result);
-  assert.deepEqual(JSON.parse(result.stdout.trim()), ["vaapi"], "Rootful Docker uses daemon device permissions");
+  assert.deepEqual(JSON.parse(result.stdout.trim()), [{ ...defaultGPUs.vaapi, device: "/missing-render-device" }], "Rootful Docker uses daemon device permissions");
   f.changeState({ info: { Runtimes: {}, OperatingSystem: "Debian", SecurityOptions: ["name=rootless"] } });
   result = f.functions(probeHost, { TEST_RENDER_DEVICE: "/missing-render-device" });
   succeeded(result);
@@ -1485,6 +1633,22 @@ test("VAAPI detection checks vendor and rootless device access", requiresCompose
   result = f.functions(probeHost, { TEST_RENDER_DEVICE: "/missing-render-device", TEST_RENDER_VENDOR: "0x10de" });
   succeeded(result);
   assert.deepEqual(JSON.parse(result.stdout.trim()), []);
+});
+
+test("GPU detection lists each VAAPI and NVIDIA card separately", requiresCompose, (t) => {
+  const f = fixture(t);
+  const result = f.functions(probeHost, {
+    TEST_RENDER_DEVICES: `${vaapiDevice}\n${secondVaapiGPU.device}`,
+    TEST_NVIDIA_MODE: "ready",
+    TEST_NVIDIA_DEVICES: `${nvidiaDevice}, NVIDIA RTX 4060\n${secondNvidiaGPU.device}, NVIDIA RTX 4090`,
+  });
+  succeeded(result);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), [
+    defaultGPUs.vaapi,
+    { ...secondVaapiGPU, label: "Intel GPU" },
+    defaultGPUs.nvidia,
+    secondNvidiaGPU,
+  ]);
 });
 
 test("automatic GPU detection rejects remote Docker hosts", requiresCompose, (t) => {

@@ -12,9 +12,11 @@ TEMPLATE_DIR="/usr/local/share/video-site-91/deploy"
 RAW_OPTIONS=(--no-interpolate --no-path-resolution --no-normalize --no-env-resolution --no-consistency)
 COMPOSE_FILES=()
 PROJECT_OPTIONS=()
-READY_GPU=()
+GPU_CHOICES="[]"
 ACTION=""
 SELECTED_GPU="keep"
+SELECTED_GPU_DEVICE=""
+SELECTED_GPU_LABEL=""
 TELEGRAM_MODE="keep"
 TELEGRAM_SERVICE="telegram-bot-api"
 OLD_TELEGRAM_IMAGE=""
@@ -50,23 +52,30 @@ def normalize_environment:
 def device_source:
   if type == "object" then (.source // "") else split(":")[0] end;
 
+def device_target:
+  if type == "object" then (.target // .source // "") else split(":") | .[1] // .[0] end;
+
 def is_dri: . == "/dev/dri" or startswith("/dev/dri/");
+
+def is_gpu_device: is_dri or startswith("/dev/nvidia");
+
+def is_gpu_mapping: (device_source | is_gpu_device) or (device_target | is_gpu_device);
 
 def gpu_modes:
   [if ((.gpus // [] | length) > 0 or .runtime == "nvidia" or
        any((.deploy.resources.reservations.devices // [])[]; .driver == "nvidia"))
    then "nvidia" else empty end,
-   if any((.devices // [])[]; device_source | is_dri)
+   if any((.devices // [])[]; (device_source | is_dri) or (device_target | is_dri))
    then "vaapi" else empty end];
 
 def remove_gpu:
   del(.gpus) |
   (if .runtime == "nvidia" then del(.runtime) else . end) |
-  (if has("devices") then .devices |= map(select(device_source | is_dri | not)) else . end) |
+  (if has("devices") then .devices |= map(select(is_gpu_mapping | not)) else . end) |
   (if .deploy.resources.reservations.devices != null then
      .deploy.resources.reservations.devices |= map(select(.driver != "nvidia"))
    else . end) |
-  .environment |= (environment_map | del(.NVIDIA_DRIVER_CAPABILITIES, .NVIDIA_VISIBLE_DEVICES));
+  .environment |= (environment_map | del(.NVIDIA_DRIVER_CAPABILITIES, .NVIDIA_VISIBLE_DEVICES, .CUDA_VISIBLE_DEVICES));
 
 def merge_deployment($template; $local):
   if ($template.services | has($service)) and ($local.services | has($service)) then
@@ -180,29 +189,26 @@ def validate_telegram:
     error("Telegram Bot API needs a valid TELEGRAM_HTTP_PORT")
   else . end;
 
-def configure_gpu($mode; $template):
+def configure_gpu($mode; $device; $template):
   .services[$service] |= (
     if $mode == "keep" then .
     elif $mode == "cpu" then remove_gpu
     else
-      (if ((gpu_modes - [$mode]) | length) > 0 then remove_gpu else . end) |
-      (if (gpu_modes | index($mode)) == null then
-         if $mode == "vaapi" then
-           .devices = ((.devices // []) + $template.services[$service].devices)
-         else
-           .deploy.resources.reservations.devices =
-             ((.deploy.resources.reservations.devices // []) +
-              $template.services[$service].deploy.resources.reservations.devices)
-         end
-       else . end) |
-      if $mode == "nvidia" then
+      (.environment | environment_map | .NVIDIA_DRIVER_CAPABILITIES // "") as $capabilities |
+      remove_gpu |
+      if $mode == "vaapi" then
+        .devices = ((.devices // []) + [{source: $device, target: $device, permissions: "rwm"}])
+      else
+        .deploy.resources.reservations.devices =
+          ((.deploy.resources.reservations.devices // []) +
+           [($template.services[$service].deploy.resources.reservations.devices[0] |
+             del(.count) | .device_ids = [$device])]) |
         .environment |= environment_map |
-        (.environment.NVIDIA_DRIVER_CAPABILITIES // "") as $capabilities |
         if ($capabilities | contains("$")) then
           error("NVIDIA_DRIVER_CAPABILITIES uses interpolation; include compute,video,utility there before configuring NVIDIA access")
         else
           ($capabilities | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $values |
-          if ($values | index("all")) != null then .
+          if ($values | index("all")) != null then .environment.NVIDIA_DRIVER_CAPABILITIES = $capabilities
           else
             ($template.services[$service].environment | environment_map |
              .NVIDIA_DRIVER_CAPABILITIES | split(",")) as $required |
@@ -211,7 +217,7 @@ def configure_gpu($mode; $template):
                  if index($value) == null then . + [$value] else . end) | join(","))
           end
         end
-      else . end
+      end
     end);
 JQ
 )
@@ -277,8 +283,8 @@ usage() {
       cat <<'EOF'
 Usage: bash 91-docker.sh gpu
 
-Detect the current host GPU and configure Compose for container GPU access.
-Use VAAPI when available, otherwise NVIDIA, or CPU if no usable GPU is found.
+Configure GPU access; choose a GPU when multiple are available.
+Use CPU if none are usable. Requires a local Linux Docker Engine.
 EOF
       ;;
     telegram)
@@ -314,7 +320,7 @@ Manage 91 Docker.
   update [--image IMAGE]   Update 91 (default: reuse the configured image tag)
   uninstall               Remove the deployment, images, configuration and application data (you'd better know what you're doing)
   reset-password          Reset an existing user's password interactively (requires 91 to be running)
-  gpu                     Detect the current host GPU and configure Compose
+  gpu                     Configure GPU access (select if multiple)
   telegram                Deploy the local Telegram Bot API
 EOF
       ;;
@@ -593,14 +599,70 @@ pci_gpu_vendors() {
 }
 
 gpu_ready() {
-  local mode
-  for mode in "${READY_GPU[@]}"; do [[ "$mode" != "$1" ]] || return 0; done
-  return 1
+  json -e --arg mode "$1" 'any(.[]; .mode == $mode)' <<< "$GPU_CHOICES" >/dev/null
+}
+
+add_gpu_choice() {
+  GPU_CHOICES=$(json --arg mode "$1" --arg device "$2" --arg label "$3" '
+    . + [{mode: $mode, device: $device, label: $label}]
+  ' <<< "$GPU_CHOICES")
+}
+
+render_device_name() {
+  local device_path="/sys/class/drm/${1##*/}/device" name line
+  if [[ -r "$device_path/product_name" ]]; then
+    IFS= read -r name < "$device_path/product_name" || true
+    if [[ -n "$name" ]]; then printf '%s\n' "$name"; return; fi
+  fi
+  if command -v lspci >/dev/null 2>&1 && [[ -r "$device_path/uevent" ]]; then
+    while IFS= read -r line; do
+      if [[ "$line" == PCI_SLOT_NAME=* ]]; then
+        if name=$(lspci -s "${line#*=}") && [[ -n "$name" ]]; then
+          printf '%s\n' "$name"
+          return
+        fi
+        break
+      fi
+    done < "$device_path/uevent"
+  fi
+  case "$2" in
+    0x8086) printf 'Intel GPU\n' ;;
+    0x1002) printf 'AMD GPU\n' ;;
+  esac
+}
+
+select_gpu() {
+  local count choice selected
+  count=$(json 'length' <<< "$GPU_CHOICES")
+  if (( count == 0 )); then
+    SELECTED_GPU=cpu
+    log "No usable GPU detected; 91 will use the CPU to generate video covers and previews."
+    return
+  fi
+  choice=1
+  if (( count > 1 )); then
+    printf 'Available GPUs:\n' >&2
+    json -r 'to_entries[] | "  \(.key + 1)) \(.value.label) [\(.value.mode), \(.value.device)]"' <<< "$GPU_CHOICES" >&2
+    while true; do
+      printf 'Select GPU [1-%s] (q to cancel): ' "$count" >&2
+      IFS= read -r choice || die "GPU selection cancelled before deployment changes; select a GPU interactively or provide its number on stdin"
+      case "$choice" in q|Q) die "GPU selection cancelled before deployment changes" ;; esac
+      if [[ "$choice" =~ ^[1-9][0-9]*$ ]] &&
+        json -e --arg choice "$choice" '($choice | tonumber) <= length' <<< "$GPU_CHOICES" >/dev/null; then
+        break
+      fi
+      printf 'Enter a number from 1 to %s, or q to cancel.\n' "$count" >&2
+    done
+  fi
+  selected=$(json --arg choice "$choice" '.[$choice | tonumber - 1]' <<< "$GPU_CHOICES")
+  SELECTED_GPU=$(json -r '.mode' <<< "$selected")
+  SELECTED_GPU_DEVICE=$(json -r '.device' <<< "$selected")
+  SELECTED_GPU_LABEL=$(json -r '.label' <<< "$selected")
 }
 
 detect_host_gpu() {
-  local info="$1" endpoint="${DOCKER_HOST:-}" operating_system rootless device vendor names vendors
-  READY_GPU=()
+  local info="$1" endpoint="${DOCKER_HOST:-}" operating_system rootless device vendor name devices vendors
+  GPU_CHOICES="[]"
   if [[ -n "${DOCKER_CONTEXT:-}" || -z "$endpoint" ]]; then
     endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
   fi
@@ -613,7 +675,7 @@ detect_host_gpu() {
     vendor=$(render_vendor "$device" 2>/dev/null) || continue
     case "$vendor" in 0x8086|0x1002) ;; *) continue ;; esac
     if [[ "$rootless" != true || ( -r "$device" && -w "$device" ) ]]; then
-      if ! gpu_ready vaapi; then READY_GPU+=(vaapi); fi
+      add_gpu_choice vaapi "$device" "$(render_device_name "$device" "$vendor")"
     else
       log "Cannot access $device; check render/video group permissions"
     fi
@@ -623,9 +685,15 @@ detect_host_gpu() {
     log "Intel/AMD GPU found, but no usable /dev/dri/renderD* device; check the host kernel driver and device permissions"
   fi
   if command -v nvidia-smi >/dev/null 2>&1; then
-    if names=$(timeout 10s nvidia-smi --query-gpu=name --format=csv,noheader) && [[ -n "$names" ]]; then
+    if devices=$(timeout 10s nvidia-smi --query-gpu=uuid,name --format=csv,noheader) && [[ -n "$devices" ]]; then
       if json -e '.Runtimes | has("nvidia")' < "$info" >/dev/null; then
-        READY_GPU+=(nvidia)
+        while IFS=, read -r device name; do
+          device="${device//[[:space:]]/}"
+          name="${name#"${name%%[![:space:]]*}"}"
+          [[ "$device" =~ ^GPU-[[:xdigit:]-]+$ && -n "$name" ]] ||
+            die "Cannot identify an NVIDIA GPU from nvidia-smi output; check the host driver"
+          add_gpu_choice nvidia "$device" "$name"
+        done <<< "$devices"
       else
         log "NVIDIA driver works, but Docker has no NVIDIA runtime; install NVIDIA Container Toolkit and configure Docker"
       fi
@@ -751,15 +819,10 @@ prepare_gpu() {
   command -v timeout >/dev/null 2>&1 || die "timeout is required for GPU detection"
   docker info --format '{{json .}}' > "$WORK_DIR/docker-info.json"
   detect_host_gpu "$WORK_DIR/docker-info.json"
-  if gpu_ready vaapi; then SELECTED_GPU=vaapi
-  elif gpu_ready nvidia; then SELECTED_GPU=nvidia
-  else
-    SELECTED_GPU=cpu
-    log "No usable GPU detected; 91 will use the CPU to generate video covers and previews."
-  fi
+  select_gpu
   case "$SELECTED_GPU" in
     nvidia|vaapi)
-      log "GPU access: $SELECTED_GPU; the application's GPU switch will not be changed"
+      log "Selected GPU: $SELECTED_GPU_LABEL ($SELECTED_GPU, $SELECTED_GPU_DEVICE); the application's GPU switch will not be changed"
       load_deployment_templates
       mode="docker-compose.gpu-$SELECTED_GPU.yml"
       docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/$mode" "$WORK_DIR/$mode"
@@ -771,11 +834,11 @@ prepare_gpu() {
 build_candidate() {
   local -a candidate_files
   json -n --slurpfile template "$WORK_DIR/template.json" --slurpfile local "$WORK_DIR/local.json" \
-    --slurpfile gpu "$WORK_DIR/gpu.json" --arg mode "$SELECTED_GPU" --arg image "$TARGET_IMAGE" \
+    --slurpfile gpu "$WORK_DIR/gpu.json" --arg mode "$SELECTED_GPU" --arg device "$SELECTED_GPU_DEVICE" --arg image "$TARGET_IMAGE" \
     --arg action "$ACTION" --arg requested_image "$REQUESTED_IMAGE" '
       (if $action == "install" or $action == "update" then merge_deployment($template[0]; $local[0]) else $local[0] end) |
       (if $action == "install" or $requested_image != "" then .services[$service].image = $image else . end) |
-      configure_gpu($mode; $gpu[0])
+      configure_gpu($mode; $device; $gpu[0])
     ' > "$WORK_DIR/proposed.json"
   if [[ "$TELEGRAM_MODE" == enable ]]; then prepare_telegram; fi
   compose_with "$WORK_DIR/proposed.json" -- config --format yaml "${RAW_OPTIONS[@]}" > "$WORK_DIR/candidate.yml"
@@ -796,6 +859,32 @@ validate_candidate() {
     (if $mode == "keep" then ($before[0].services[$service] | gpu_modes)
      elif $mode == "cpu" then [] else [$mode] end)
   ' < "$WORK_DIR/resolved.json" >/dev/null || die "An overlay conflicts with the GPU configuration; update that overlay first"
+  if [[ "$ACTION" == gpu && "$SELECTED_GPU" != cpu ]]; then
+    # Matching the backend type is insufficient: overlays must not expose other
+    # GPUs or override the card the user selected.
+    json -e --arg mode "$SELECTED_GPU" --arg device "$SELECTED_GPU_DEVICE" '
+      .services[$service] |
+      ((.gpus // [] | length) == 0) and .runtime != "nvidia" and
+      .privileged != true and
+      all(.volumes[]?; .target != "/dev" and (.target | is_gpu_device | not)) and
+      ((.environment | environment_map | .NVIDIA_VISIBLE_DEVICES) == null) and
+      ((.environment | environment_map | .CUDA_VISIBLE_DEVICES) == null) and
+      if $mode == "vaapi" then
+        [.devices[]? | select(is_gpu_mapping)] ==
+          [{source: $device, target: $device, permissions: "rwm"}]
+      else
+        ([.devices[]? | select(is_gpu_mapping)] | length) == 0 and
+        ([.deploy.resources.reservations.devices[]? | select(.driver == "nvidia")] |
+          length == 1 and .[0].device_ids == [$device] and .[0].count == null and
+          (.[0].capabilities | index("gpu")) != null) and
+        ((.environment.NVIDIA_DRIVER_CAPABILITIES // "" | split(",") |
+          map(gsub("^\\s+|\\s+$"; ""))) as $capabilities |
+          ($capabilities | index("all")) != null or
+          (["compute", "video", "utility"] - $capabilities | length) == 0)
+      end
+    ' < "$WORK_DIR/resolved.json" >/dev/null ||
+      die "Compose settings override the selected GPU; remove conflicting GPU mappings, visibility settings or privileged access"
+  fi
   if [[ "$TELEGRAM_MODE" == enable ]]; then validate_and_pull_telegram; fi
 }
 
