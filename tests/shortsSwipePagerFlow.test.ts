@@ -9,6 +9,7 @@ import {
   type ShortsPagerGestureEnd,
 } from "../src/shorts/useShortsSwipePager";
 import { SHORTS_SYSTEM_GESTURE_TOP_PX } from "../src/shorts/gestureBoundary";
+import { SHORTS_WHEEL_SETTLE_MS } from "../src/shorts/wheelGesture";
 
 // 事件序列级别的回归测试：判定公式已经在 shortsSwipePager.test.ts 里单独覆盖，
 // 这里验证把它们串起来的状态机——跟手位移、方向让路、多指中断、点击是否被吞，
@@ -394,10 +395,11 @@ function createHarness(options?: HarnessOptions) {
     /** 一次 wheel 事件。deltaY 正 = 向下滚 = 看下一条。 */
     wheel(
       deltaY: number,
-      options?: { deltaMode?: number; ctrlKey?: boolean; target?: unknown }
+      options?: { deltaX?: number; deltaMode?: number; ctrlKey?: boolean; target?: unknown }
     ) {
       fire("wheel", {
         deltaY,
+        deltaX: options?.deltaX ?? 0,
         deltaMode: options?.deltaMode ?? 0,
         ctrlKey: options?.ctrlKey ?? false,
         target: options?.target ?? null,
@@ -1222,7 +1224,7 @@ test("a mouse click that never moves stays a click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 滚轮：一次手势 = 一条视频，和手指同一条落点动画
+// 滚轮：一次手势 = 一条视频，整段过渡不被连续输入打断
 // ---------------------------------------------------------------------------
 
 test("one wheel notch advances exactly one video", () => {
@@ -1230,7 +1232,8 @@ test("one wheel notch advances exactly one video", () => {
     h.wheel(100);
     // 走的是和拖拽完全相同的 FLIP 落点：位置当场提交，再补一段动画
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
-    assert.equal(h.settleDurationMs, SHORTS_PAGER_COMMIT_SETTLE_MS);
+    assert.equal(h.settleDurationMs, SHORTS_WHEEL_SETTLE_MS);
+    assert.equal(h.transitionSpec, `transform ${SHORTS_WHEEL_SETTLE_MS}ms ease`);
     h.endTransition();
     assert.equal(h.transformStyle, "");
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
@@ -1242,6 +1245,57 @@ test("scrolling up with the wheel goes back one video", () => {
     h.root.scrollTop = SLIDE_HEIGHT * 2;
     h.wheel(-100);
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+  });
+});
+
+test("wheel input cannot restart or retarget an unfinished transition", () => {
+  withHarness((h) => {
+    h.wheel(100);
+    h.setLiveTranslate(SLIDE_HEIGHT * 0.8);
+    const writes = h.transformWrites;
+    h.tick(150);
+    h.wheel(100);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    assert.deepEqual(h.transformWrites, writes, "the current animation must finish intact");
+
+    h.setLiveTranslate(SLIDE_HEIGHT * 0.2);
+    h.tick(150);
+    h.wheel(100);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    assert.deepEqual(h.transformWrites, writes);
+  });
+});
+
+test("a second trackpad push is recognised before the inertia stream goes quiet", () => {
+  withHarness((h) => {
+    h.wheel(100);
+    h.endTransition();
+    for (const delta of [24, 18, 12, 8, 5, 3, 2]) {
+      h.tick(50);
+      h.wheel(delta);
+    }
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    for (const delta of [9, 18]) {
+      h.tick(16);
+      h.wheel(delta);
+    }
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
+  });
+});
+
+test("a deliberate reverse trackpad swipe is not swallowed by the previous tail", () => {
+  withHarness((h) => {
+    h.wheel(100);
+    h.endTransition();
+    for (const delta of [20, 12, 6]) {
+      h.tick(100);
+      h.wheel(delta);
+    }
+    h.tick(16);
+    h.wheel(-12);
+    h.tick(16);
+    h.wheel(-14);
+    assert.equal(h.root.scrollTop, 0);
   });
 });
 
@@ -1269,6 +1323,50 @@ test("a fresh wheel gesture after a pause advances again", () => {
     h.endTransition();
     // 间隔拉开 = 新的一次手势
     h.tick(200);
+    h.wheel(100);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
+  });
+});
+
+test("separate wheel steps always animate one full slide with the same timing", () => {
+  withHarness((h) => {
+    for (let index = 1; index <= 3; index += 1) {
+      h.wheel(100);
+      assert.equal(h.root.scrollTop, SLIDE_HEIGHT * index);
+      assert.equal(h.transformWrites.at(-2), `translate3d(0, ${SLIDE_HEIGHT}px, 0)`);
+      assert.equal(h.settleDurationMs, SHORTS_WHEEL_SETTLE_MS);
+      h.endTransition();
+      h.tick(400);
+    }
+  });
+});
+
+test("horizontal and empty wheel events do not flip or keep the vertical gesture locked", () => {
+  withHarness((h) => {
+    h.wheel(100, { deltaX: 200 });
+    assert.equal(h.root.scrollTop, 0);
+    h.wheel(100);
+    h.endTransition();
+    h.tick(100);
+    h.wheel(0);
+    h.wheel(50, { deltaX: 100 });
+    h.tick(100);
+    h.wheel(100);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
+  });
+});
+
+test("a lost wheel transitionend unlocks without replaying the inertia tail", () => {
+  withHarness((h) => {
+    h.wheel(100);
+    for (let index = 0; index < 10; index += 1) {
+      h.advance(50);
+      h.wheel(6);
+    }
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    assert.equal(h.awaitingTransition, false);
+    assert.equal(h.transformStyle, "");
+    h.tick(400);
     h.wheel(100);
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
   });

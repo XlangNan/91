@@ -2,9 +2,16 @@ import { useEffect, useRef } from "react";
 import { clamp } from "./mediaBuffer";
 import { classifyTouchSeekIntent } from "./slideGestures";
 import { isShortsSystemGestureStart } from "./gestureBoundary";
+import {
+  INITIAL_SHORTS_WHEEL_STATE,
+  SHORTS_WHEEL_SETTLE_EASING,
+  SHORTS_WHEEL_SETTLE_MS,
+  normalizeShortsWheelDelta,
+  resolveShortsWheelStep,
+} from "./wheelGesture";
 
 /**
- * 移动端上下翻页手势控制器。
+ * 整屏翻页控制器：触屏 / 鼠标拖拽与 wheel 共用坐标和落点提交，分别判定输入。
  *
  * 原生 `scroll-snap-type: y mandatory` 把"滑多远才算切屏"完全交给了浏览器：
  * 各家实现不一致，慢速大幅滑动经常被判回弹，快速轻扫又可能不吸附，落点动画
@@ -89,23 +96,6 @@ export const SHORTS_PAGER_SETTLE_FALLBACK_MS = 80;
  * 不会被误伤。
  */
 const SHORTS_PAGER_CLICK_GUARD_MS = 300;
-/**
- * 一次滚轮手势内累计位移达到这个像素数就切一屏。
- * 鼠标一格通常是 100px（deltaMode=0）或 3 行（deltaMode=1，≈48px），
- * 取 40 保证任何一格都够；触控板轻推一下也够。
- */
-export const SHORTS_PAGER_WHEEL_STEP_PX = 40;
-/**
- * 两次 wheel 事件间隔超过这个毫秒数就算新的一次手势。
- *
- * 这是"一次手势最多切一屏"在滚轮上的落点，也是触控板惯性尾巴的分水岭：
- * 触控板一次轻扫会连发几十个事件、间隔只有十几毫秒，尾巴能拖一秒多；
- * 不按手势聚合的话一次轻扫会连翻十几条视频。鼠标滚轮有意识地一格一格滚
- * 时，间隔通常在 150ms 以上，每一格因此都是独立手势。
- */
-export const SHORTS_PAGER_WHEEL_GESTURE_GAP_MS = 120;
-/** deltaMode=1（按行）时一行折算多少像素。 */
-export const SHORTS_WHEEL_LINE_HEIGHT_PX = 16;
 /**
  * 静止时允许偏离吸附点的最大像素数，超过就自我纠正。
  *
@@ -237,76 +227,6 @@ export function applyShortsPagerEdgeResistance(input: {
     return input.min - Math.min(over * SHORTS_PAGER_EDGE_RESISTANCE, limit);
   }
   return input.value;
-}
-
-/** 把 wheel 的三种 deltaMode 统一换算成像素，后面只跟像素打交道。 */
-export function normalizeShortsWheelDelta(input: {
-  deltaY: number;
-  deltaMode: number;
-  viewportHeight: number;
-}): number {
-  if (!Number.isFinite(input.deltaY)) return 0;
-  // 1 = 按行（Firefox 常用），2 = 按页
-  if (input.deltaMode === 1) return input.deltaY * SHORTS_WHEEL_LINE_HEIGHT_PX;
-  if (input.deltaMode === 2) {
-    return input.deltaY * Math.max(1, input.viewportHeight);
-  }
-  return input.deltaY;
-}
-
-export type ShortsWheelGestureState = {
-  /** 上一次 wheel 事件的时间戳 */
-  lastEventAt: number;
-  /** 本次手势内累计的像素位移 */
-  accumulated: number;
-  /** 本次手势是否已经消费过一步——之后的惯性尾巴一律忽略 */
-  consumed: boolean;
-};
-
-export const INITIAL_SHORTS_WHEEL_STATE: ShortsWheelGestureState = {
-  lastEventAt: Number.NEGATIVE_INFINITY,
-  accumulated: 0,
-  consumed: false,
-};
-
-/**
- * 一次 wheel 事件该不该切屏，以及切哪个方向。
- *
- * 规则与手指完全一致：**一次手势最多切一屏**。事件流按间隔切分成手势，
- * 每个手势里累计位移第一次越过阈值就切一屏，之后这次手势里剩下的事件
- * （触控板的惯性尾巴）全部忽略。
- *
- * 返回新的状态而不是就地修改：这样整条判定是纯函数，能脱离浏览器直接测。
- */
-export function resolveShortsWheelStep(input: {
-  state: ShortsWheelGestureState;
-  deltaPx: number;
-  now: number;
-}): { state: ShortsWheelGestureState; step: -1 | 0 | 1 } {
-  const continuing =
-    input.now - input.state.lastEventAt < SHORTS_PAGER_WHEEL_GESTURE_GAP_MS;
-  const accumulated = continuing ? input.state.accumulated : 0;
-  const consumed = continuing ? input.state.consumed : false;
-
-  if (consumed) {
-    // 同一次手势已经切过屏，剩下的惯性照单全收但不产生动作。
-    return {
-      state: { lastEventAt: input.now, accumulated: 0, consumed: true },
-      step: 0,
-    };
-  }
-
-  const next = accumulated + input.deltaPx;
-  if (Math.abs(next) < SHORTS_PAGER_WHEEL_STEP_PX) {
-    return {
-      state: { lastEventAt: input.now, accumulated: next, consumed: false },
-      step: 0,
-    };
-  }
-  return {
-    state: { lastEventAt: input.now, accumulated: 0, consumed: true },
-    step: next > 0 ? 1 : -1,
-  };
 }
 
 /**
@@ -572,10 +492,14 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
    *
    * 注意它**不**改变视频切换的时机。活跃屏仍由 IntersectionObserver 判定，
    * 而 IO 看的是视觉矩形——补偿量正是为了让视觉位置保持连续，所以切换依旧
-   * 发生在画面视觉越过 60% 的那一刻（easeOutCubic 前段快，约在动画前 1/4）。
+   * 发生在画面视觉越过 60% 的那一刻。
    * 做不做 FLIP 在这一点上完全一样。
    */
-  const settleTo = (target: HTMLElement | null, committed: boolean) => {
+  const settleTo = (
+    target: HTMLElement | null,
+    committed: boolean,
+    source: "pointer" | "wheel" = "pointer"
+  ) => {
     detachSettleListeners();
     settling = false;
 
@@ -591,14 +515,19 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     // 浏览器可能夹取实际落点，按真正生效的值算补偿量，画面才不会跳。
     const compensation = live + (getScrollTop() - from);
 
-    const duration = resolveShortsPagerSettleDuration({
-      remainingPx: compensation,
-      viewportHeight: getViewportHeight(),
-      committed,
-    });
+    const duration = source === "wheel" && Math.abs(compensation) >= 1
+      ? SHORTS_WHEEL_SETTLE_MS
+      : resolveShortsPagerSettleDuration({
+          remainingPx: compensation,
+          viewportHeight: getViewportHeight(),
+          committed,
+        });
+    const easing = source === "wheel"
+      ? SHORTS_WHEEL_SETTLE_EASING
+      : SHORTS_PAGER_SETTLE_EASING;
     if (duration <= 0) {
       clearTranslate();
-        return;
+      return;
     }
 
     settling = true;
@@ -608,7 +537,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     track.style.transition = "none";
     applyTranslate(compensation);
     forceStyleFlush();
-    track.style.transition = `transform ${Math.round(duration)}ms ${SHORTS_PAGER_SETTLE_EASING}`;
+    track.style.transition = `transform ${Math.round(duration)}ms ${easing}`;
     applyTranslate(0);
     track.addEventListener("transitionend", handleTransitionEnd);
     settleTimer = window.setTimeout(
@@ -892,20 +821,19 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   };
 
   /**
-   * 把当前屏推进 / 退回一屏。滚轮和拖拽最终都汇到 settleTo，因此过渡完全
-   * 一致——用户不该从动画上看出自己刚才用的是手指、鼠标还是滚轮。
+   * 把当前屏推进 / 退回一屏。滚轮等待整段动画完成，避免反复打断后
+   * 从不同的中间位置起步，造成每条视频的移动距离和观感速度不一致。
    */
   const stepBy = (direction: 1 | -1) => {
-    if (drag) return;
+    if (drag || settling) return;
     const slides = readSlides();
     if (slides.length === 0) return;
     const slideTops = readSlideTops();
-    // 用视觉位置定锚：动画途中再来一次滚轮，是从画面此刻所在的位置推进。
     const index = findNearestShortsSlideIndex(slideTops, getEffectiveTop());
     if (index < 0) return;
     const target = clamp(index + direction, 0, slides.length - 1);
     if (target === index) return;
-    settleTo(slides[target] ?? null, true);
+    settleTo(slides[target] ?? null, true, "wheel");
   };
 
   let wheelState = INITIAL_SHORTS_WHEEL_STATE;
@@ -918,6 +846,8 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     // 滚动就会从那里溜出去，而吸附已经关了，画面会停在两条视频中间。
     if (event.cancelable) event.preventDefault();
     if (drag) return;
+    // 水平滑动和零位移既不翻页，也不能延长上一轮纵向手势的惯性锁。
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
 
     const decision = resolveShortsWheelStep({
       state: wheelState,
@@ -927,6 +857,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
         viewportHeight: getViewportHeight(),
       }),
       now: performance.now(),
+      canStep: !settling,
     });
     wheelState = decision.state;
     if (decision.step !== 0) stepBy(decision.step);

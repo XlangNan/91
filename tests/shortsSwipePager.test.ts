@@ -12,18 +12,20 @@ import {
   SHORTS_PAGER_VELOCITY_WINDOW_MS,
   computeShortsPagerVelocity,
   findNearestShortsSlideIndex,
-  INITIAL_SHORTS_WHEEL_STATE,
-  SHORTS_PAGER_WHEEL_GESTURE_GAP_MS,
-  SHORTS_PAGER_WHEEL_STEP_PX,
-  SHORTS_WHEEL_LINE_HEIGHT_PX,
   applyShortsPagerEdgeResistance,
-  normalizeShortsWheelDelta,
-  resolveShortsWheelStep,
   measureOffsetWithinSlide,
   parseTranslateY,
   resolveShortsPagerSettleDuration,
   resolveShortsPagerTargetIndex,
 } from "../src/shorts/useShortsSwipePager";
+import {
+  INITIAL_SHORTS_WHEEL_STATE,
+  SHORTS_WHEEL_GESTURE_GAP_MS,
+  SHORTS_WHEEL_STEP_PX,
+  SHORTS_WHEEL_LINE_HEIGHT_PX,
+  normalizeShortsWheelDelta,
+  resolveShortsWheelStep,
+} from "../src/shorts/wheelGesture";
 import { shouldUseShortsSwipePager } from "../src/shorts/platform";
 
 const VIEWPORT = 900;
@@ -548,7 +550,7 @@ test("wheel deltas are normalised across the three delta modes", () => {
   assert.equal(normalizeShortsWheelDelta({ deltaY: NaN, deltaMode: 0, viewportHeight }), 0);
 });
 
-function wheelRun(events: Array<{ delta: number; at: number }>) {
+function wheelRun(events: Array<{ delta: number; at: number; canStep?: boolean }>) {
   let state = INITIAL_SHORTS_WHEEL_STATE;
   const steps: number[] = [];
   for (const event of events) {
@@ -556,6 +558,7 @@ function wheelRun(events: Array<{ delta: number; at: number }>) {
       state,
       deltaPx: event.delta,
       now: event.at,
+      canStep: event.canStep ?? true,
     });
     state = decision.state;
     if (decision.step !== 0) steps.push(decision.step);
@@ -565,18 +568,18 @@ function wheelRun(events: Array<{ delta: number; at: number }>) {
 
 test("small deltas accumulate until they add up to a deliberate scroll", () => {
   // 单个事件不够，累计够了才切
-  assert.deepEqual(wheelRun([{ delta: 15, at: 0 }, { delta: 15, at: 10 }]), []);
+  assert.deepEqual(wheelRun([{ delta: 10, at: 0 }, { delta: 10, at: 10 }]), []);
   assert.deepEqual(
     wheelRun([
-      { delta: 15, at: 0 },
-      { delta: 15, at: 10 },
-      { delta: 15, at: 20 },
+      { delta: 10, at: 0 },
+      { delta: 10, at: 10 },
+      { delta: 10, at: 20 },
     ]),
     [1]
   );
   // 一格鼠标滚轮本身就够
-  assert.deepEqual(wheelRun([{ delta: SHORTS_PAGER_WHEEL_STEP_PX, at: 0 }]), [1]);
-  assert.deepEqual(wheelRun([{ delta: -SHORTS_PAGER_WHEEL_STEP_PX, at: 0 }]), [-1]);
+  assert.deepEqual(wheelRun([{ delta: SHORTS_WHEEL_STEP_PX, at: 0 }]), [1]);
+  assert.deepEqual(wheelRun([{ delta: -SHORTS_WHEEL_STEP_PX, at: 0 }]), [-1]);
 });
 
 test("one continuous wheel gesture only ever moves one video", () => {
@@ -586,7 +589,7 @@ test("one continuous wheel gesture only ever moves one video", () => {
 });
 
 test("a pause between wheel events starts a new gesture", () => {
-  const gap = SHORTS_PAGER_WHEEL_GESTURE_GAP_MS;
+  const gap = SHORTS_WHEEL_GESTURE_GAP_MS;
   assert.deepEqual(
     wheelRun([
       { delta: 100, at: 0 },
@@ -598,22 +601,61 @@ test("a pause between wheel events starts a new gesture", () => {
   // 累计量也跟着手势重置：跨手势的零碎位移不该攒成一步
   assert.deepEqual(
     wheelRun([
-      { delta: 30, at: 0 },
-      { delta: 30, at: 1_000 },
-      { delta: 30, at: 2_000 },
+      { delta: 15, at: 0 },
+      { delta: 15, at: 1_000 },
+      { delta: 15, at: 2_000 },
     ]),
     []
   );
 });
 
-test("reversing direction mid-tail does not double back", () => {
-  // 同一次手势内先向下越过阈值，之后无论来什么都不再产生动作
+test("reversing direction during the transition does not double back or queue a step", () => {
   assert.deepEqual(
     wheelRun([
       { delta: 100, at: 0 },
-      { delta: -100, at: 10 },
+      { delta: -100, at: 10, canStep: false },
       { delta: -100, at: 20 },
     ]),
     [1]
   );
+});
+
+test("light trackpad swipes respond while tiny direction changes do not accumulate", () => {
+  assert.deepEqual(wheelRun([{ delta: 12, at: 0 }, { delta: 14, at: 16 }]), [1]);
+  assert.deepEqual(wheelRun([
+    { delta: 15, at: 0 }, { delta: -12, at: 16 }, { delta: 15, at: 32 },
+  ]), []);
+});
+
+test("decaying inertia and an isolated spike never renew a consumed gesture", () => {
+  assert.deepEqual(wheelRun([
+    { delta: 100, at: 0 }, { delta: 60, at: 40 }, { delta: 30, at: 80 },
+    { delta: 10, at: 120 }, { delta: 3, at: 160 }, { delta: 20, at: 200 },
+    { delta: 2, at: 216 }, { delta: 1, at: 232 },
+  ]), [1]);
+  assert.deepEqual(wheelRun([
+    { delta: 100, at: 0 }, { delta: 40, at: 40 }, { delta: -1, at: 80 },
+    { delta: 30, at: 96 }, { delta: 25, at: 112 },
+  ]), [1], "a tiny reverse wobble must not unlock the original inertia tail");
+});
+
+test("renewal requires sustained acceleration within a short sampling window", () => {
+  assert.deepEqual(wheelRun([
+    { delta: 100, at: 0 }, { delta: 2, at: 40 },
+    { delta: 12, at: 80 }, { delta: 12, at: 96 },
+  ]), [1, 1]);
+  assert.deepEqual(wheelRun([
+    { delta: 100, at: 0 }, { delta: 2, at: 40 },
+    { delta: 12, at: 80 }, { delta: 12, at: 200 },
+  ]), [1]);
+});
+
+test("invalid and zero wheel deltas do not change gesture state", () => {
+  for (const deltaPx of [0, NaN, Infinity, -Infinity]) {
+    const decision = resolveShortsWheelStep({
+      state: INITIAL_SHORTS_WHEEL_STATE, deltaPx, now: 0, canStep: true,
+    });
+    assert.equal(decision.step, 0);
+    assert.equal(decision.state, INITIAL_SHORTS_WHEEL_STATE);
+  }
 });
