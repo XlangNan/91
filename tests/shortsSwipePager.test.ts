@@ -639,14 +639,32 @@ test("decaying inertia and an isolated spike never renew a consumed gesture", ()
   ]), [1], "a tiny reverse wobble must not unlock the original inertia tail");
 });
 
+test("a plateau or a brief dip in the inertia tail does not start another swipe", () => {
+  const tails = [
+    [100, 40, 16, 5, 3, 12, 12, 8, 4, 2],
+    [100, 60, 32, 2, 24, 24, 16, 8, 2],
+    [100, 60, 32, 2, 24, 28, 16, 8, 2],
+  ];
+  for (const direction of [1, -1]) {
+    for (const deltas of tails) {
+      assert.deepEqual(wheelRun(deltas.map((delta, index) => ({
+        delta: delta * direction,
+        at: index * 16,
+      }))), [direction]);
+    }
+  }
+});
+
 test("renewal requires sustained acceleration within a short sampling window", () => {
   assert.deepEqual(wheelRun([
-    { delta: 100, at: 0 }, { delta: 2, at: 40 },
-    { delta: 12, at: 80 }, { delta: 12, at: 96 },
+    { delta: 100, at: 0 }, { delta: 8, at: 16 },
+    { delta: 3, at: 32 }, { delta: 2, at: 48 },
+    { delta: 12, at: 64 }, { delta: 14, at: 80 },
   ]), [1, 1]);
   assert.deepEqual(wheelRun([
-    { delta: 100, at: 0 }, { delta: 2, at: 40 },
-    { delta: 12, at: 80 }, { delta: 12, at: 200 },
+    { delta: 100, at: 0 }, { delta: 8, at: 16 },
+    { delta: 3, at: 32 }, { delta: 2, at: 48 },
+    { delta: 12, at: 64 }, { delta: 14, at: 184 },
   ]), [1]);
 });
 

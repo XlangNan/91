@@ -1283,6 +1283,43 @@ test("a second trackpad push is recognised before the inertia stream goes quiet"
   });
 });
 
+test("three successive trackpad swipes stop at the third video despite an uneven tail", () => {
+  const tails = [
+    [12, 12, 8, 4, 2],
+    [32, 2, 24, 24, 16, 8, 2],
+    [32, 2, 24, 28, 16, 8, 2],
+  ];
+  for (const tail of tails) {
+    withHarness((h) => {
+      for (let index = 1; index <= 3; index += 1) {
+        for (const delta of [12, 18]) {
+          h.advance(16);
+          h.wheel(delta);
+        }
+        assert.equal(h.root.scrollTop, SLIDE_HEIGHT * index);
+
+        // 惯性仍在上报时完成动画，下一次轻扫可直接接上。
+        for (const delta of [30, 24, 18, 12, 8, 5, 3, 2]) {
+          h.advance(32);
+          h.wheel(delta);
+        }
+        h.endTransition();
+      }
+
+      for (const delta of tail) {
+        h.advance(16);
+        h.wheel(delta);
+      }
+      h.advance(1_000);
+      assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 3, "the last swipe must not advance twice");
+      assert.equal(h.awaitingTransition, false);
+
+      h.wheel(100);
+      assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 4, "a fresh swipe must still work");
+    });
+  }
+});
+
 test("a deliberate reverse trackpad swipe is not swallowed by the previous tail", () => {
   withHarness((h) => {
     h.wheel(100);

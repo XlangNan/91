@@ -6,8 +6,9 @@ export const SHORTS_WHEEL_LINE_HEIGHT_PX = 16;
 export const SHORTS_WHEEL_SETTLE_MS = 250;
 export const SHORTS_WHEEL_SETTLE_EASING = "ease";
 
-// wheel 没有标准化的“手指重新落下”事件。惯性衰减后再次连续发力，视为新手势；
-// 至少两个事件确认，避免惯性尾巴中的单个尖峰误翻页。
+// wheel 没有标准化的“手指重新落下”事件。重新发力要超过近期惯性范围，
+// 并在后续采样中继续增长；单帧低谷后的回升、或回升后持平仍属于惯性。
+const RECENT_DELTA_SAMPLES = 3;
 const RENEWAL_WINDOW_MS = 100;
 const RENEWAL_MIN_DELTA_PX = 8;
 const RENEWAL_GROWTH_RATIO = 1.5;
@@ -29,7 +30,8 @@ export function normalizeShortsWheelDelta(input: {
 
 export type ShortsWheelGestureState = {
   lastEventAt: number;
-  lastDeltaPx: number;
+  /** 保留最近几个有符号的位移，避免单帧低谷成为重新发力的基线。 */
+  recentDeltas: number[];
   /** 已消费手势的方向；反向位移也必须累计够阈值才能解除惯性锁。 */
   direction: -1 | 0 | 1;
   accumulated: number;
@@ -40,7 +42,7 @@ export type ShortsWheelGestureState = {
 
 export const INITIAL_SHORTS_WHEEL_STATE: ShortsWheelGestureState = {
   lastEventAt: Number.NEGATIVE_INFINITY,
-  lastDeltaPx: 0,
+  recentDeltas: [],
   direction: 0,
   accumulated: 0,
   consumed: false,
@@ -66,7 +68,9 @@ export function resolveShortsWheelStep(input: {
   const newGesture = now - state.lastEventAt >= SHORTS_WHEEL_GESTURE_GAP_MS;
   const next: ShortsWheelGestureState = {
     lastEventAt: now,
-    lastDeltaPx: deltaPx,
+    recentDeltas: newGesture
+      ? [deltaPx]
+      : [...state.recentDeltas.slice(1 - RECENT_DELTA_SAMPLES), deltaPx],
     direction: newGesture ? direction : state.direction,
     accumulated: newGesture ? 0 : state.accumulated,
     consumed: !newGesture && state.consumed,
@@ -88,19 +92,21 @@ export function resolveShortsWheelStep(input: {
       next.renewalSamples = 0;
     } else {
       const magnitude = Math.abs(deltaPx);
-      const previousMagnitude = Math.abs(state.lastDeltaPx);
+      const previousDelta = state.recentDeltas[state.recentDeltas.length - 1] ?? 0;
+      const previousMagnitude = Math.abs(previousDelta);
+      const recentPeak = Math.max(...state.recentDeltas.map((delta) => Math.abs(delta)));
       const continuingRenewal =
         next.renewalSamples > 0 &&
         now - next.renewalStartedAt <= RENEWAL_WINDOW_MS &&
-        magnitude >= previousMagnitude;
+        magnitude > previousMagnitude;
       if (continuingRenewal) {
         next.accumulated += deltaPx;
         next.renewalSamples += 1;
       } else if (
         magnitude >= RENEWAL_MIN_DELTA_PX &&
-        Math.sign(state.lastDeltaPx) === direction &&
-        magnitude >= previousMagnitude * RENEWAL_GROWTH_RATIO &&
-        magnitude - previousMagnitude >= RENEWAL_GROWTH_PX
+        Math.sign(previousDelta) === direction &&
+        magnitude >= recentPeak * RENEWAL_GROWTH_RATIO &&
+        magnitude - recentPeak >= RENEWAL_GROWTH_PX
       ) {
         next.accumulated = deltaPx;
         next.renewalStartedAt = now;
