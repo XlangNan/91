@@ -31,6 +31,7 @@ TARGET=""
 OLD_IMAGE=""
 TEMPLATE_CONTAINER=""
 NEEDS_ROLLBACK=false
+UPDATE_LOCK_FILE=""
 
 # Keep JSON manipulation in one jq library. Shell values are passed with --arg;
 # Compose parses YAML and preserves interpolation, env_file and relative paths.
@@ -294,6 +295,15 @@ Usage: bash 91-docker.sh reset-password
 Reset an existing user's password interactively (requires 91 to be running).
 EOF
       ;;
+    uninstall)
+      cat <<'EOF'
+Usage: bash 91-docker.sh uninstall
+
+Remove deployment containers, networks, images, volumes, config and backups.
+Permanently delete 91/Telegram data; keep external video directories.
+Host data cleanup requires a local Linux Docker Engine.
+EOF
+      ;;
     *)
       cat <<'EOF'
 Usage: bash 91-docker.sh COMMAND [options]
@@ -302,6 +312,7 @@ Manage 91 Docker.
 
   install [--image IMAGE]  Install 91 (default: stable tage)
   update [--image IMAGE]   Update 91 (default: reuse the configured image tag)
+  uninstall               Remove the deployment, images, configuration and application data (you'd better know what you're doing)
   reset-password          Reset an existing user's password interactively (requires 91 to be running)
   gpu                     Detect the current host GPU and configure Compose
   telegram                Deploy the local Telegram Bot API
@@ -315,7 +326,7 @@ parse_args() {
   if (( $# == 0 )); then usage; exit 0; fi
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    install|update|reset-password|gpu|telegram) ACTION="$1"; shift ;;
+    install|update|uninstall|reset-password|gpu|telegram) ACTION="$1"; shift ;;
     *) die "Unknown command: $1 (see --help)" ;;
   esac
   if [[ "$ACTION" == telegram ]]; then TELEGRAM_MODE=enable; fi
@@ -353,6 +364,76 @@ reset_password() {
   # Compose allocates a TTY by default. Preserve piped input and automation too.
   if [[ ! -t 0 || ! -t 1 ]]; then options+=(-T); fi
   compose exec "${options[@]}" "$SERVICE" /opt/video-site-91/server reset-password
+}
+
+uninstall_deployment() {
+  local source path protected endpoint operating_system file project_dir
+  project_dir=$(dirname -- "$TARGET")
+  local -a data_paths=() config_files=("${COMPOSE_FILES[@]}" "$project_dir/.env")
+  compose config --format json > "$WORK_DIR/uninstall.json"
+  json -e '.services | has($service)' < "$WORK_DIR/uninstall.json" >/dev/null ||
+    die "Deployment must contain service $SERVICE"
+  # Container mount targets identify application-owned storage. Never infer
+  # ownership from a host directory name or delete every mounted video library.
+  json -r '
+    .services[$service] as $site |
+    ($site.environment.VIDEO_DATA_DIR // "/opt/video-site-91/data" | rtrimstr("/")) as $data |
+    ($site.environment.VIDEO_CONFIG // ($data + "/config.yaml")) as $config |
+    [.services | to_entries[] |
+      select(.key == $service or .key == "telegram-bot-api") |
+      .key as $name | .value.volumes[]? |
+      select(.type == "bind") |
+      select(if $name == $service then
+        .target == $data or (.target | startswith($data + "/")) or .target == $config
+      else .target == "/var/lib/telegram-bot-api" or
+        (.target | startswith("/var/lib/telegram-bot-api/")) end) |
+      .source] | unique | .[] |
+      if startswith("/") and (test("[\u0000-\u001f]") | not) then .
+      else error("Application data mount needs an absolute host path without control characters") end
+  ' < "$WORK_DIR/uninstall.json" > "$WORK_DIR/data-paths"
+
+  if [[ -s "$WORK_DIR/data-paths" ]]; then
+    endpoint="${DOCKER_HOST:-}"
+    if [[ -n "${DOCKER_CONTEXT:-}" || -z "$endpoint" ]]; then
+      endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+    fi
+    operating_system=$(docker info --format '{{.OperatingSystem}}')
+    [[ "$(uname -s)" == Linux && "$endpoint" == unix://* && "${operating_system,,}" != *"docker desktop"* ]] ||
+      die "Data bind-mount cleanup requires a local Linux Docker Engine; run uninstall on the Docker host"
+  fi
+  while IFS= read -r source; do
+    path=$(realpath -m -- "$source")
+    # Check every path before stopping services. Ancestors of the deployment,
+    # script or home directory must never become recursive deletion targets.
+    for protected in / /bin /boot /dev /etc /home /lib /lib64 /media /mnt /opt /proc /root /run /sbin /srv /sys /tmp /usr /var /var/lib /var/lib/docker /var/lib/containerd \
+      "$project_dir" "$HOME" "${COMPOSE_FILES[@]}" "$(realpath -m -- "${BASH_SOURCE[0]}")"; do
+      [[ "$protected" != "$path" && "$protected" != "$path/"* ]] ||
+        die "Refusing to delete unsafe application data path: $source ($path)"
+    done
+    data_paths+=("$path")
+    if [[ "$source" != "$path" ]]; then data_paths+=("$source"); fi
+  done < "$WORK_DIR/data-paths"
+
+  log "Removing deployment containers, networks, images and volumes"
+  compose down --remove-orphans --volumes --rmi all
+  for path in "${data_paths[@]}"; do
+    log "Deleting application data: $path"
+    rm -rf --one-file-system -- "$path"
+  done
+  # Keep deployment files until Docker and data cleanup succeed, so failures can
+  # be retried with the original project name, mounts and image references.
+  for file in "${COMPOSE_FILES[@]}"; do
+    for path in "$file".bak-*; do
+      [[ -e "$path" || -L "$path" ]] || continue
+      rm -f -- "$path"
+    done
+  done
+  rm -f -- "${config_files[@]}"
+  rm -rf -- "$WORK_DIR"
+  WORK_DIR=""
+  # All deployment mutations are finished before the lock pathname is removed.
+  rm -f -- "$UPDATE_LOCK_FILE"
+  log "Uninstall complete: deployment resources, configuration and application data removed"
 }
 
 raw_json() { compose_with "$@" -- config --format json "${RAW_OPTIONS[@]}"; }
@@ -605,7 +686,7 @@ finish() {
   if [[ "$NEEDS_ROLLBACK" == true ]]; then restore_deployment; fi
   if [[ -n "$TEMPLATE_CONTAINER" ]]; then docker rm -v "$TEMPLATE_CONTAINER" >/dev/null; fi
   if [[ -n "$WORK_DIR" ]]; then rm -rf -- "$WORK_DIR"; fi
-  if (( status )); then log "Deployment failed (exit $status)" >&2; fi
+  if (( status )); then log "$ACTION failed (exit $status)" >&2; fi
   exit "$status"
 }
 
@@ -773,25 +854,37 @@ main() {
     return
   fi
   local command help_text option
-  for command in docker flock cmp mktemp cp mv ln chmod chown; do
+  local -a required_commands=(docker flock cmp mktemp cp mv ln chmod chown)
+  if [[ "$ACTION" == uninstall ]]; then required_commands=(docker flock mktemp realpath rm); fi
+  for command in "${required_commands[@]}"; do
     command -v "$command" >/dev/null 2>&1 || die "$command is required; install it before running this script"
   done
-  help_text=$(docker compose config --help)
-  for option in "${RAW_OPTIONS[@]}"; do
-    [[ "$help_text" == *"$option"* ]] || die "Upgrade Docker Compose: config must support $option"
-  done
+  if [[ "$ACTION" != uninstall ]]; then
+    help_text=$(docker compose config --help)
+    for option in "${RAW_OPTIONS[@]}"; do
+      [[ "$help_text" == *"$option"* ]] || die "Upgrade Docker Compose: config must support $option"
+    done
+  fi
   umask 077
   deployment_files
   ensure_jq
+  # The directory lock remains stable even when uninstall removes the lock file.
+  exec {DEPLOYMENT_DIRECTORY_LOCK}< "$(dirname -- "$TARGET")"
+  flock -n "$DEPLOYMENT_DIRECTORY_LOCK" || die "Another deployment operation is running"
   # Lock a separate inode because the main Compose file is replaced atomically.
-  exec {UPDATE_LOCK}> "$(dirname -- "$TARGET")/.$(basename -- "$TARGET").update.lock"
+  UPDATE_LOCK_FILE="$(dirname -- "$TARGET")/.$(basename -- "$TARGET").update.lock"
+  exec {UPDATE_LOCK}> "$UPDATE_LOCK_FILE"
   flock -n "$UPDATE_LOCK" || die "Another deployment operation is running"
   WORK_DIR=$(mktemp -d "$(dirname -- "$TARGET")/.docker-update.XXXXXX")
   trap 'finish "$?"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
-  apply_deployment
+  if [[ "$ACTION" == uninstall ]]; then
+    uninstall_deployment
+  else
+    apply_deployment
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -35,6 +35,8 @@ type EngineState = {
   failTelegramPull?: boolean;
   resetExit?: number;
   resetInput?: string;
+  uninstalls?: any[];
+  uninstallExit?: number;
   info: { Runtimes: Record<string, unknown>; OperatingSystem: string; SecurityOptions?: string[] };
 };
 
@@ -83,14 +85,19 @@ if (args[0] === "compose") {
     exit();
   }
   if (command === "rm" || command === "stop") exit();
-  if (command === "up") {
+  if (command === "up" || command === "down") {
     const config = spawnSync(process.env.TEST_REAL_DOCKER,
       [...args.slice(0, commandIndex), "config", "--format", "json"], { encoding: "utf8" });
     if (config.status) { process.stderr.write(config.stderr); exit(config.status); }
+    if (command === "down") {
+      (state.uninstalls ??= []).push(JSON.parse(config.stdout));
+      if (state.uninstallExit) process.stderr.write("Docker cleanup failed\\n");
+      exit(state.uninstallExit ?? 0);
+    }
     state.starts.push(JSON.parse(config.stdout));
     exit((state.starts.length === 1 && state.failStart) || (state.starts.length > 1 && state.failRollback) ? 1 : 0);
   }
-} else if (args[0] === "info") { output(JSON.stringify(state.info)); exit();
+} else if (args[0] === "info") { output(args.includes("{{.OperatingSystem}}") ? state.info.OperatingSystem : JSON.stringify(state.info)); exit();
 } else if (args[0] === "context") { output("unix:///var/run/docker.sock"); exit();
 } else if (args[0] === "inspect") { output(args.at(-1) === "existing-telegram" ? process.env.TEST_OLD_TELEGRAM_IMAGE : process.env.TEST_OLD_IMAGE); exit();
 } else if (args[0] === "pull") {
@@ -120,6 +127,17 @@ function fixture(t: TestContext) {
     copyFileSync(join(repository, name), join(root, "templates", name));
   }
   writeFileSync(join(bin, "docker"), dockerProbe, { mode: 0o755 });
+  // Even a broken uninstall must never delete files outside this fixture.
+  writeFileSync(join(bin, "rm"), `#!/bin/bash
+for path in "$@"; do
+  case "$path" in
+    -*) ;;
+    "$TEST_DEPLOYMENT"/*) ;;
+    *) printf 'Unexpected deletion outside fixture: %s\\n' "$path" >&2; exit 97 ;;
+  esac
+done
+exec /bin/rm "$@"
+`, { mode: 0o755 });
   writeFileSync(join(bin, "nvidia-smi"), '#!/bin/sh\nif [ "$TEST_NVIDIA_MODE" = ready ]; then printf "RTX 4060\\n"; else exit 1; fi\n', { mode: 0o755 });
   writeFileSync(join(bin, "timeout"), '#!/bin/sh\nif [ "$TEST_NVIDIA_MODE" = timeout ]; then exit 124; fi\nexec /usr/bin/timeout "$@"\n', { mode: 0o755 });
   // An inherited COMPOSE_FILE must never redirect a test to a real deployment.
@@ -179,6 +197,194 @@ const telegramCredentials = {
   TELEGRAM_API_ID: "12345",
   TELEGRAM_API_HASH: "0123456789abcdef0123456789abcdef",
 };
+
+test("uninstall deletes deployment resources, application data and configuration", requiresCompose, (t) => {
+  const f = fixture(t);
+  const config = parse(readFileSync(f.target, "utf8"));
+  config.services[service].volumes.push("./library:/videos:ro");
+  writeFileSync(f.target, JSON.stringify(config));
+  for (const directory of ["data", "data/uploads", "data/previews", "library"]) mkdirSync(join(f.root, directory), { recursive: true });
+  writeFileSync(join(f.root, "data/config.yaml"), "storage: {data_dir: /opt/video-site-91/data}\n");
+  writeFileSync(join(f.root, "data/uploads/clip.mp4"), "uploaded video");
+  writeFileSync(join(f.root, "library/original.mp4"), "external original");
+  writeFileSync(join(f.root, ".env"), "WEB_PORT=9191\n");
+  writeFileSync(`${f.target}.bak-20261018.123456`, "old deployment");
+  writeFileSync(join(f.root, "notes.txt"), "unrelated file");
+
+  const result = f.run(["uninstall"]);
+  succeeded(result);
+  const state = f.state();
+  const down = state.calls.find((args) => args.includes("down"))!;
+  assert.deepEqual(down.slice(down.indexOf("down")), ["down", "--remove-orphans", "--volumes", "--rmi", "all"]);
+  assert.equal(state.uninstalls?.length, 1);
+  for (const path of [f.target, join(f.root, "data"), join(f.root, ".env")]) assert.equal(existsSync(path), false, path);
+  assert.deepEqual(f.backups(), []);
+  assert.equal(readdirSync(f.root).some((name) => name.startsWith(".docker-update.")), false);
+  assert.equal(existsSync(join(f.root, ".docker-compose.yml.update.lock")), false);
+  assert.equal(readFileSync(join(f.root, "library/original.mp4"), "utf8"), "external original");
+  assert.equal(readFileSync(join(f.root, "notes.txt"), "utf8"), "unrelated file");
+  assert.deepEqual(state.starts, []);
+  assert.equal(state.pulled, false);
+  assert.equal(state.calls.some((args) => ["image", "create", "cp"].includes(args[0])), false);
+  assert.match(result.stdout, /Uninstall complete/);
+});
+
+test("uninstall honors custom Compose files, overlays and the dotenv project name", requiresCompose, (t) => {
+  const f = fixture(t);
+  const alternative = join(f.root, "production.yml");
+  const overlay = join(f.root, "storage.yml");
+  renameSync(f.target, alternative);
+  writeFileSync(overlay, JSON.stringify({ services: { [service]: { volumes: ["./private data:/opt/video-site-91/data"] } } }));
+  writeFileSync(join(f.root, ".env"), "COMPOSE_FILE=production.yml:storage.yml\nCOMPOSE_PROJECT_NAME=existing-project\n");
+  mkdirSync(join(f.root, "private data"));
+  writeFileSync(join(f.root, "private data/video-site.db"), "database");
+  writeFileSync(`${overlay}.bak-20261018.123456`, "overlay backup");
+
+  succeeded(f.run(["uninstall"]));
+  assert.equal(f.state().uninstalls?.[0].name, "existing-project");
+  const down = f.state().calls.find((args) => args.includes("down"))!;
+  assert.deepEqual(down.slice(1, down.indexOf("down")), ["--project-directory", f.root, "-f", alternative, "-f", overlay]);
+  for (const path of [alternative, overlay, f.target, join(f.root, ".env"), join(f.root, "private data")]) assert.equal(existsSync(path), false, path);
+  assert.deepEqual(f.backups(), []);
+});
+
+test("uninstall removes separate Telegram storage and custom 91 data/config mounts", requiresCompose, (t) => {
+  const f = fixture(t);
+  const config = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
+  Object.assign(config.services[service].environment, { VIDEO_DATA_DIR: "/app-data", VIDEO_CONFIG: "/app-config.yaml" });
+  config.services[service].volumes = ["./site:/app-data", "./settings.yaml:/app-config.yaml:ro", "./bot:/var/lib/telegram-bot-api"];
+  config.services["telegram-bot-api"].volumes = ["./bot:/var/lib/telegram-bot-api"];
+  writeFileSync(f.target, JSON.stringify(config));
+  for (const directory of ["site", "bot"]) {
+    mkdirSync(join(f.root, directory));
+    writeFileSync(join(f.root, directory, "data.bin"), "owned data");
+  }
+  writeFileSync(join(f.root, "settings.yaml"), "storage: {}\n");
+
+  succeeded(f.run(["uninstall"]));
+  assert.ok(f.state().uninstalls?.[0].services["telegram-bot-api"]);
+  for (const path of ["site", "bot", "settings.yaml"]) assert.equal(existsSync(join(f.root, path)), false, path);
+});
+
+test("uninstall removes named volumes without requiring local host bind cleanup", requiresCompose, (t) => {
+  const f = fixture(t);
+  const config = parse(readFileSync(f.target, "utf8"));
+  config.services[service].volumes = ["app-data:/opt/video-site-91/data"];
+  config.volumes = { "app-data": {} };
+  writeFileSync(f.target, JSON.stringify(config));
+
+  succeeded(f.run(["uninstall"], { DOCKER_HOST: "ssh://docker-host" }));
+  assert.ok(f.state().uninstalls?.[0].volumes["app-data"]);
+  assert.equal(f.state().calls.some((args) => ["context", "info"].includes(args[0])), false);
+  assert.equal(existsSync(f.target), false);
+});
+
+test("uninstall removes a data directory and its configured symlink", requiresCompose, (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.root, "storage"));
+  writeFileSync(join(f.root, "storage/video-site.db"), "database");
+  symlinkSync(join(f.root, "storage"), join(f.root, "data"), "dir");
+
+  succeeded(f.run(["uninstall"]));
+  assert.equal(existsSync(join(f.root, "storage")), false);
+  assert.equal(readdirSync(f.root).includes("data"), false);
+});
+
+for (const storage of ["/", ".", "./unsafe-link"]) {
+  test(`uninstall refuses unsafe data path ${storage} before Docker cleanup`, requiresCompose, (t) => {
+    const f = fixture(t);
+    const config = parse(readFileSync(f.target, "utf8"));
+    config.services[service].volumes = [`${storage}:/opt/video-site-91/data`];
+    writeFileSync(f.target, JSON.stringify(config));
+    if (storage === "./unsafe-link") symlinkSync(f.root, join(f.root, "unsafe-link"), "dir");
+    const original = readFileSync(f.target, "utf8");
+
+    const result = f.run(["uninstall"]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing to delete unsafe application data path/);
+    assert.equal(readFileSync(f.target, "utf8"), original);
+    assert.equal(f.state().uninstalls, undefined);
+  });
+}
+
+test("uninstall refuses a remote bind-mount deployment before changing anything", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  const result = f.run(["uninstall"], { DOCKER_HOST: "ssh://docker-host" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /run uninstall on the Docker host/);
+  assert.equal(f.state().uninstalls, undefined);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+});
+
+test("uninstall preserves data and deployment files when Docker cleanup fails", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  mkdirSync(join(f.root, "data"));
+  writeFileSync(join(f.root, "data/video-site.db"), "database");
+  f.changeState({ uninstallExit: 23 });
+
+  const result = f.run(["uninstall"]);
+  assert.equal(result.status, 23);
+  assert.match(result.stderr, /Docker cleanup failed/);
+  assert.doesNotMatch(result.stdout, /Uninstall complete/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(readFileSync(join(f.root, "data/video-site.db"), "utf8"), "database");
+});
+
+test("uninstall preserves deployment files when host data cleanup fails", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  mkdirSync(join(f.root, "data"));
+  const result = f.functions(`
+rm() {
+  local path
+  for path in "$@"; do
+    if [[ "$path" == "$TEST_DEPLOYMENT/data" ]]; then return 27; fi
+  done
+  command rm "$@"
+}
+main uninstall
+`);
+  assert.equal(result.status, 27);
+  assert.doesNotMatch(result.stdout, /Uninstall complete/);
+  assert.equal(f.state().uninstalls?.length, 1);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+});
+
+test("uninstall shares the deployment lock with updates", requiresCompose, (t) => {
+  const f = fixture(t);
+  const result = f.functions(`
+exec {TEST_LOCK}> "$TEST_DEPLOYMENT/.docker-compose.yml.update.lock"
+flock -n "$TEST_LOCK"
+bash "$1" uninstall
+`);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Another deployment operation is running/);
+  assert.equal(f.state().uninstalls, undefined);
+  assert.equal(existsSync(f.target), true);
+});
+
+test("deployment directory stays locked when uninstall removes the lock file", requiresCompose, (t) => {
+  const f = fixture(t);
+  const result = f.functions(`
+exec {TEST_DIRECTORY_LOCK}< "$TEST_DEPLOYMENT"
+flock -n "$TEST_DIRECTORY_LOCK"
+bash "$1" uninstall
+`);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Another deployment operation is running/);
+  assert.equal(f.state().uninstalls, undefined);
+  assert.equal(existsSync(f.target), true);
+});
+
+test("uninstall requires an existing deployment", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  const result = f.run(["uninstall"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /uninstall requires an existing Compose configuration/);
+  assert.equal(f.state().uninstalls, undefined);
+});
 
 test("password reset invokes the running server and leaves deployment files untouched", requiresCompose, (t) => {
   const f = fixture(t);
@@ -288,7 +494,7 @@ for (const options of [["--image", "example:latest"], ["gpu", "nvidia"], ["teleg
 }
 
 test("removed script options are rejected before invoking Docker or installing", requiresCompose, (t) => {
-  for (const action of [[], ["install"], ["update"], ["reset-password"], ["gpu"], ["telegram"]]) {
+  for (const action of [[], ["install"], ["update"], ["uninstall"], ["reset-password"], ["gpu"], ["telegram"]]) {
     for (const options of [["--user-id", "7"], ["--user-id=7"], ["--config", "/opt/config files/custom.yaml"], ["--config=/opt/config files/custom.yaml"], ["-p", "custom-project"], ["--project-name", "custom-project"], ["--port", "8181"], ["--data-dir", "/new/data"], ["-f", "custom.yml"], ["--wait-timeout", "10"], ["--gpu", "auto"], ["--telegram", "enable"], ["configure"]]) {
       const f = freshDeployment(t);
       const result = f.run([...action, ...options]);
@@ -562,7 +768,7 @@ test("no arguments show help without installing or updating", requiresCompose, (
 });
 
 test("each command provides help without contacting Docker", requiresCompose, (t) => {
-  for (const action of ["install", "update", "reset-password", "gpu", "telegram"]) {
+  for (const action of ["install", "update", "uninstall", "reset-password", "gpu", "telegram"]) {
     const f = fixture(t);
     const result = f.run([action, "--help"]);
     succeeded(result);
@@ -611,7 +817,7 @@ test("options without a command cannot trigger deployment changes", requiresComp
 });
 
 test("GPU and Telegram commands reject image changes before invoking Docker", requiresCompose, (t) => {
-  for (const action of ["gpu", "telegram", "reset-password"]) {
+  for (const action of ["gpu", "telegram", "reset-password", "uninstall"]) {
     const f = fixture(t);
     const result = f.run([action, "--image", "main"]);
     assert.notEqual(result.status, 0);
