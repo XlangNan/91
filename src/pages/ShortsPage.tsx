@@ -1688,6 +1688,7 @@ function ShortsSlideImpl({
   const currentTimeRef = useRef(0);
   const progressTrackRef = useRef<HTMLDivElement | null>(null);
   const progressTimeRef = useRef<HTMLDivElement | null>(null);
+  const progressHoverTimeRef = useRef<HTMLSpanElement | null>(null);
   const playbackTimeRef = useRef<HTMLSpanElement | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const scrubbingRef = useRef(false);
@@ -2852,6 +2853,28 @@ function ShortsSlideImpl({
     onClearScreenChange,
   });
 
+  function hideProgressHoverTime() {
+    if (progressHoverTimeRef.current) progressHoverTimeRef.current.hidden = true;
+  }
+
+  function handleProgressHover(event: React.PointerEvent<HTMLDivElement>) {
+    const tooltip = progressHoverTimeRef.current;
+    if (!tooltip) return;
+    const knownDuration = durationRef.current;
+    if (event.pointerType !== "mouse" || event.buttons !== 0 || scrubbingRef.current || knownDuration <= 0) {
+      hideProgressHoverTime();
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const offset = clamp(event.clientX - rect.left, 0, rect.width);
+    const label = `${formatClock((offset / rect.width) * knownDuration)} / ${formatClock(knownDuration)}`;
+    if (tooltip.textContent !== label) tooltip.textContent = label;
+    tooltip.hidden = false;
+    const halfWidth = Math.min(tooltip.offsetWidth, rect.width) / 2;
+    tooltip.style.left = `${clamp(offset, halfWidth, rect.width - halfWidth)}px`;
+  }
+
   function handleDoubleClickLike(x: number, y: number) {
     // 触发飞心动画（每次都给一个新 key 强制重启动画）
     setHeartBurst({ key: Date.now(), x, y });
@@ -3168,8 +3191,16 @@ function ShortsSlideImpl({
                   }`}
                   // 进度条自己就要吃掉整根手指：横向定位、纵向也不该误触发翻页。
                   data-shorts-no-swipe=""
-                  onPointerDown={handleProgressPointerDown}
-                  onPointerMove={handleProgressPointerMove}
+                  onPointerEnter={handleProgressHover}
+                  onPointerLeave={hideProgressHoverTime}
+                  onPointerDown={(event) => {
+                    hideProgressHoverTime();
+                    handleProgressPointerDown(event);
+                  }}
+                  onPointerMove={(event) => {
+                    handleProgressHover(event);
+                    handleProgressPointerMove(event);
+                  }}
                   onPointerUp={handleProgressPointerEnd}
                   onPointerCancel={handleProgressPointerEnd}
                   onLostPointerCapture={handleProgressPointerEnd}
@@ -3181,6 +3212,12 @@ function ShortsSlideImpl({
                   >
                     <div className="shorts-slide__progress-fill" />
                   </div>
+                  <span
+                    ref={progressHoverTimeRef}
+                    className="shorts-slide__progress-hover-time"
+                    hidden
+                    aria-hidden="true"
+                  />
                 </div>
               )}
               {isActive && shouldLoad && !isMarkedHidden && (
