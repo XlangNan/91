@@ -64,7 +64,7 @@ export function newDriveCredentialError(
     const hasUsername = hasCredential(credentials, "username");
     const hasPassword = hasCredential(credentials, "password");
     if (!hasScannedToken && (!hasUsername || !hasPassword)) {
-      return "请使用方式一扫码登录，或填写方式二的手机号/邮箱和密码";
+      return "请扫码登录，或填写手机号/邮箱和密码";
     }
   }
 
@@ -73,7 +73,7 @@ export function newDriveCredentialError(
     const hasUsername = hasCredential(credentials, "username");
     const hasPassword = hasCredential(credentials, "password");
     if (!hasRefreshToken && (!hasUsername || !hasPassword)) {
-      return "请填写 PikPak 邮箱和密码，或使用方式二的 refresh_token";
+      return "请填写 PikPak 邮箱和密码，或填写 refresh_token";
     }
   }
 

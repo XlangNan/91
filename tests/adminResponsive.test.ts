@@ -1463,16 +1463,15 @@ test("admin modals and action footers adapt on mobile", () => {
   assert.match(ruleBodyByContains(css, ".admin-form__row input"), /width\s*:\s*100%/);
 });
 
-test("mobile drive type picker uses compact three-column cards", () => {
-  const driveTypeGridBodies = allRuleBodies(adminCss, ".admin-drive-type-grid");
-  const driveTypeCardBodies = allRuleBodies(adminCss, ".admin-drive-type-card");
-  const driveTypeIconBodies = allRuleBodies(adminCss, ".admin-drive-type-card__icon");
+test("mobile drive type picker uses compact two-column cards", () => {
+  const grid = ruleBody(adminCss, ".admin-modal--drive-form .admin-drive-type-grid");
+  const cards = allRuleBodies(adminCss, ".admin-modal--drive-form .admin-drive-type-card");
+  const icons = allRuleBodies(adminCss, ".admin-modal--drive-form .admin-drive-type-card__icon");
 
-  assert.match(driveTypeGridBodies, /grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
-  assert.doesNotMatch(driveTypeGridBodies, /grid-template-columns\s*:\s*repeat\(2,\s*1fr\)/);
-  assert.match(driveTypeCardBodies, /min-height\s*:\s*94px/);
-  assert.match(driveTypeIconBodies, /width\s*:\s*38px/);
-  assert.match(driveTypeIconBodies, /height\s*:\s*38px/);
+  assert.match(grid, /grid-template-columns\s*:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(cards, /min-width\s*:\s*0/);
+  assert.match(icons, /width\s*:\s*28px/);
+  assert.match(icons, /height\s*:\s*28px/);
 });
 
 test("mobile tags management does not create horizontal page overflow", () => {

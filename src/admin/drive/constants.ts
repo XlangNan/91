@@ -180,7 +180,7 @@ export type CredentialField = {
   key: string;
   label: string;
   placeholder: string;
-  methodLabel?: "方式一" | "方式二";
+  methodLabel?: string;
   type?: "text" | "select";
   options?: Array<{ value: string; label: string }>;
   multiline?: boolean;
@@ -197,7 +197,7 @@ export function credentialFields(kind: Kind): CredentialField[] {
           key: "cookie",
           label: "Cookie",
           placeholder: "__pus=...; __puus=...; ...",
-          methodLabel: "方式二",
+          methodLabel: "或手动填写",
           multiline: true,
           required: true,
         },
@@ -208,7 +208,7 @@ export function credentialFields(kind: Kind): CredentialField[] {
           key: "cookie",
           label: "Cookie",
           placeholder: "UID=xxx; CID=xxx; SEID=xxx; KID=xxx",
-          methodLabel: "方式二",
+          methodLabel: "或手动填写",
           multiline: true,
           required: true,
         },
@@ -219,7 +219,7 @@ export function credentialFields(kind: Kind): CredentialField[] {
           key: "username",
           label: "手机号/邮箱",
           placeholder: "手机号或邮箱",
-          methodLabel: "方式二",
+          methodLabel: "或使用账号密码",
         },
         {
           key: "password",
@@ -233,7 +233,7 @@ export function credentialFields(kind: Kind): CredentialField[] {
           key: "username",
           label: "邮箱",
           placeholder: "user@example.com",
-          methodLabel: "方式一",
+          methodLabel: "账号密码登录",
         },
         {
           key: "password",
@@ -244,7 +244,7 @@ export function credentialFields(kind: Kind): CredentialField[] {
           key: "refresh_token",
           label: "refresh_token",
           placeholder: "邮箱密码登录不可用时填写",
-          methodLabel: "方式二",
+          methodLabel: "或使用刷新令牌",
         },
       ];
     case "wopan":
@@ -253,6 +253,7 @@ export function credentialFields(kind: Kind): CredentialField[] {
           key: "access_token",
           label: "access_token",
           placeholder: "",
+          methodLabel: "或手动填写",
           required: true,
         },
         {
@@ -268,6 +269,7 @@ export function credentialFields(kind: Kind): CredentialField[] {
           key: "refresh_token",
           label: "refresh_token",
           placeholder: "推荐填写，服务端会自动刷新 access_token",
+          methodLabel: "或手动填写",
           multiline: true,
         },
         {

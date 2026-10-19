@@ -75,8 +75,8 @@ export function QuarkQRCodeLogin({ onCookie }: { onCookie: (cookie: string) => v
   }, [session, completed, onCookie, show]);
 
   return (
-    <div className="admin-form__row">
-      <label>方式一</label>
+    <div className="admin-form__row admin-drive-qr-login">
+      <span className="admin-form__label">扫码登录</span>
       <div className="admin-p123-qr">
         <div className="admin-p123-qr__actions">
           <button

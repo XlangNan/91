@@ -116,7 +116,7 @@ test("pikpak accepts a complete username and password pair", () => {
 });
 
 test("pikpak rejects missing or partial account credentials", () => {
-  const want = "请填写 PikPak 邮箱和密码，或使用方式二的 refresh_token";
+  const want = "请填写 PikPak 邮箱和密码，或填写 refresh_token";
   assert.equal(newDriveCredentialError("pikpak", {}), want);
   assert.equal(
     newDriveCredentialError("pikpak", { username: "user@example.com" }),
@@ -136,7 +136,7 @@ test("p123 alternative credential validation remains unchanged", () => {
   );
   assert.equal(
     newDriveCredentialError("p123", {}),
-    "请使用方式一扫码登录，或填写方式二的手机号/邮箱和密码"
+    "请扫码登录，或填写手机号/邮箱和密码"
   );
 });
 

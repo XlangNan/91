@@ -1,5 +1,5 @@
-import { Fragment, useId, useMemo, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { PasswordInput } from "../PasswordInput";
 import { QuarkQRCodeLogin } from "./QuarkQRCodeLogin";
 import { P115QRCodeLogin } from "./P115QRCodeLogin";
@@ -45,11 +45,14 @@ export function DriveForm({
   form: FormState;
   onChange: (f: FormState) => void;
   isEdit: boolean;
-  onTypeSelected?: () => void;
+  onTypeSelected?: (selected: boolean) => void;
 }) {
   const idPrefix = useId();
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
   const fields = useMemo(() => credentialFields(form.kind), [form.kind]);
   const [step, setStep] = useState<"type" | "form">(isEdit ? "form" : "type");
+  const [changingType, setChangingType] = useState(false);
   const nameId = `${idPrefix}-drive-name`;
   const rootId = `${idPrefix}-drive-root`;
   const visibleFields = fields.filter((field) => {
@@ -62,6 +65,14 @@ export function DriveForm({
       form.creds[condition.key] ?? controllingField?.defaultValue ?? "";
     return controllingValue === condition.value;
   });
+
+  useEffect(() => {
+    if (isEdit) return;
+    if (step === "form") nameInputRef.current?.focus({ preventScroll: true });
+    else if (changingType) {
+      pickerRef.current?.querySelector<HTMLButtonElement>(`[data-kind="${form.kind}"]`)?.focus();
+    }
+  }, [step, isEdit, changingType, form.kind]);
 
   function set<K extends keyof FormState>(k: K, v: FormState[K]) {
     onChange({ ...form, [k]: v });
@@ -87,9 +98,9 @@ export function DriveForm({
     });
   }
   function selectType(kind: Kind) {
-    setKind(kind);
+    if (kind !== form.kind) setKind(kind);
     setStep("form");
-    onTypeSelected?.();
+    onTypeSelected?.(true);
   }
 
   const selectedOption = DRIVE_OPTIONS.find((o) => o.kind === form.kind);
@@ -97,7 +108,7 @@ export function DriveForm({
 
   if (step === "type" && !isEdit) {
     return (
-      <div className="admin-drive-type-picker">
+      <div className="admin-drive-type-picker" ref={pickerRef}>
         <div className="admin-drive-type-grid">
           {DRIVE_OPTIONS.map((opt) => {
             const iconSrc = driveKindIconPath(opt.kind);
@@ -125,6 +136,7 @@ export function DriveForm({
                   )}
                 </span>
                 <span className="admin-drive-type-card__label">{opt.label}</span>
+                <ChevronRight size={14} className="admin-drive-type-card__arrow" aria-hidden="true" />
               </button>
             );
           })}
@@ -135,7 +147,7 @@ export function DriveForm({
 
   return (
     <div className="admin-form">
-      {!isEdit && selectedOption && (
+      {selectedOption && (
         <div className="admin-drive-selected-bar" data-kind={form.kind}>
           <span
             className={`admin-drive-selected-bar__icon${selectedIconSrc ? " has-image" : ""}`}
@@ -155,6 +167,19 @@ export function DriveForm({
           <div className="admin-drive-selected-bar__text">
             <span className="admin-drive-selected-bar__name">{selectedOption.label}</span>
           </div>
+          {!isEdit && (
+            <button
+              type="button"
+              className="admin-btn admin-drive-change-type"
+              onClick={() => {
+                setChangingType(true);
+                setStep("type");
+                onTypeSelected?.(false);
+              }}
+            >
+              更换
+            </button>
+          )}
         </div>
       )}
 
@@ -163,6 +188,8 @@ export function DriveForm({
           <label htmlFor={nameId}>名称</label>
           <input
             id={nameId}
+            ref={nameInputRef}
+            placeholder="为这个网盘设置一个名称"
             value={form.name}
             onChange={(e) => set("name", e.target.value)}
           />
@@ -251,6 +278,8 @@ export function DriveForm({
                     {f.multiline ? (
                       <textarea
                         id={`${idPrefix}-credential-${f.key}`}
+                        placeholder={f.placeholder}
+                        spellCheck={false}
                         value={form.creds[f.key] ?? ""}
                         onChange={(e) => setCred(f.key, e.target.value)}
                         required={f.required && !isEdit}
@@ -258,6 +287,7 @@ export function DriveForm({
                     ) : isSecretCredential(f.key) ? (
                       <PasswordInput
                         id={`${idPrefix}-credential-${f.key}`}
+                        placeholder={f.placeholder}
                         value={form.creds[f.key] ?? ""}
                         onChange={(e) => setCred(f.key, e.target.value)}
                         required={f.required && !isEdit}
@@ -266,6 +296,7 @@ export function DriveForm({
                       <input
                         id={`${idPrefix}-credential-${f.key}`}
                         type="text"
+                        placeholder={f.placeholder}
                         value={form.creds[f.key] ?? ""}
                         onChange={(e) => setCred(f.key, e.target.value)}
                         required={f.required && !isEdit}
@@ -280,7 +311,7 @@ export function DriveForm({
       )}
 
       {usesRootDirectoryID(form.kind) && (
-        <div className="admin-form__section">
+        <div className="admin-form__section admin-drive-root-section">
           <div className="admin-form__row">
             <label htmlFor={rootId}>{rootDirectoryLabel(form.kind)}</label>
             <input

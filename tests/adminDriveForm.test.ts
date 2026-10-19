@@ -291,7 +291,7 @@ test("pikpak drive form presents email login before refresh token fallback", () 
 
   assert.match(
     fields,
-    /key: "username"[\s\S]*?label: "邮箱"[\s\S]*?methodLabel: "方式一"[\s\S]*?key: "password"[\s\S]*?key: "refresh_token"[\s\S]*?label: "refresh_token"[\s\S]*?methodLabel: "方式二"/
+    /key: "username"[\s\S]*?label: "邮箱"[\s\S]*?methodLabel: "账号密码登录"[\s\S]*?key: "password"[\s\S]*?key: "refresh_token"[\s\S]*?label: "refresh_token"[\s\S]*?methodLabel: "或使用刷新令牌"/
   );
   assert.doesNotMatch(fields, /key: "platform"/);
   assert.doesNotMatch(fields, /key: "captcha_token"/);
@@ -347,7 +347,7 @@ test("p115 drive form supports qr login and manual cookie fallback", () => {
   assertDriveTypeOption("p115", "115 网盘");
   assert.match(driveFormSource, /P115QRCodeLogin/);
   assert.match(driveFormSource, /form\.kind === "p115"/);
-  assert.match(p115QRCodeLoginSource, /<label>方式一<\/label>/);
+  assert.match(p115QRCodeLoginSource, /<span className="admin-form__label">扫码登录<\/span>/);
   assert.match(p115QRCodeLoginSource, /status\?\.state === "scanned"/);
   assert.match(p115QRCodeLoginSource, /onCookie\(next\.cookie\)/);
   assert.match(apiSource, /startP115QRLogin/);
@@ -362,14 +362,14 @@ test("p115 drive form supports qr login and manual cookie fallback", () => {
   assert.ok(match, "p115 credential field block should be present");
   assert.match(match[1], /key: "cookie"/);
   assert.match(match[1], /UID=xxx; CID=xxx; SEID=xxx; KID=xxx/);
-  assert.match(match[1], /methodLabel: "方式二"/);
+  assert.match(match[1], /methodLabel: "或手动填写"/);
 });
 
 test("quark drive form supports qr login and manual cookie fallback", () => {
   assertDriveTypeOption("quark", "夸克网盘");
   assert.match(driveFormSource, /QuarkQRCodeLogin/);
   assert.match(driveFormSource, /form\.kind === "quark"/);
-  assert.match(quarkQRCodeLoginSource, /<label>方式一<\/label>/);
+  assert.match(quarkQRCodeLoginSource, /<span className="admin-form__label">扫码登录<\/span>/);
   assert.match(quarkQRCodeLoginSource, /onCookie\(next\.cookie\)/);
   assert.match(quarkQRCodeLoginSource, /getQuarkQRStatus\(activeSession\.token\)/);
   assert.match(apiSource, /startQuarkQRLogin/);
@@ -383,7 +383,7 @@ test("quark drive form supports qr login and manual cookie fallback", () => {
     );
   assert.ok(match, "quark credential field block should be present");
   assert.match(match[1], /key: "cookie"/);
-  assert.match(match[1], /methodLabel: "方式二"/);
+  assert.match(match[1], /methodLabel: "或手动填写"/);
   assert.match(match[1], /__pus=\.\.\.; __puus=\.\.\.; \.\.\./);
   assert.doesNotMatch(match[1], /use_transcoding_address|客户端 302/);
 });
@@ -391,12 +391,12 @@ test("quark drive form supports qr login and manual cookie fallback", () => {
 test("p123 drive form exposes qr login and phone or email password login", () => {
   assertDriveTypeOption("p123", "123网盘");
   assert.match(driveFormSource, /P123QRCodeLogin/);
-  assert.match(p123QRCodeLoginSource, /<label>方式一<\/label>/);
+  assert.match(p123QRCodeLoginSource, /<span className="admin-form__label">扫码登录<\/span>/);
   assert.match(driveFormSource, /className="admin-form__method-label">\{f\.methodLabel\}<\/div>/);
   assert.doesNotMatch(p123QRCodeLoginSource, /方式一：扫码登录/);
   assert.doesNotMatch(driveFormSource, /方式二：手机号密码登录/);
   assert.match(credentialsSource, /hasScannedToken/);
-  assert.match(credentialsSource, /请使用方式一扫码登录，或填写方式二的手机号\/邮箱和密码/);
+  assert.match(credentialsSource, /请扫码登录，或填写手机号\/邮箱和密码/);
 
   const match =
     /case "p123":\s*return \[([\s\S]*?)\];\s*case "pikpak":/.exec(
@@ -407,7 +407,7 @@ test("p123 drive form exposes qr login and phone or email password login", () =>
 
   assert.match(fields, /key: "username"/);
   assert.match(fields, /label: "手机号\/邮箱"/);
-  assert.match(fields, /methodLabel: "方式二"/);
+  assert.match(fields, /methodLabel: "或使用账号密码"/);
   assert.match(fields, /key: "password"/);
   assert.match(fields, /label: "密码"/);
   assert.doesNotMatch(fields, /key: "access_token"/);
@@ -876,7 +876,7 @@ test("drive list actions use ordinary text buttons in the requested positions", 
   );
   assert.match(
     drivesPageSource,
-    /title=\{form\.id && list\.find\(\(x\) => x\.id === form\.id\) \? "编辑网盘" : "添加网盘"\}/
+    /title=\{form\.id && list\.find\(\(x\) => x\.id === form\.id\) \? "编辑凭证" : "添加网盘"\}/
   );
   assert.match(
     adminCss,
@@ -979,77 +979,10 @@ test("drive management status pills omit the leading status dot", () => {
   );
 });
 
-test("drive form modal uses flatter chrome", () => {
-  assert.match(drivesPageSource, /className="admin-modal--drive-form"/);
-  assert.match(
-    drivesPageSource,
-    /title="编辑网盘"[\s\S]*?className="admin-modal--drive-form"/
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form\s*\{[^}]*width\s*:\s*min\(520px,\s*100%\);[^}]*min-height\s*:\s*min\(440px,[^;]+\);[^}]*border\s*:\s*0;[^}]*box-shadow\s*:\s*none/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-drive-type-picker\s*\{[^}]*align-content\s*:\s*center;[^}]*flex\s*:\s*1 1 auto/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form\s*\{[^}]*scrollbar-width\s*:\s*none;[^}]*-ms-overflow-style\s*:\s*none/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form::-webkit-scrollbar,[\s\S]*?\.admin-modal--drive-form \.admin-modal__body::-webkit-scrollbar\s*\{[^}]*display\s*:\s*none/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-modal__body\s*\{[^}]*scrollbar-width\s*:\s*none;[^}]*-ms-overflow-style\s*:\s*none/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-modal__header,[\s\S]*?\.admin-modal--drive-form \.admin-modal__footer\s*\{[^}]*border\s*:\s*0;[^}]*background\s*:\s*var\(--bg-surface\)/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-form__section\s*\{[^}]*padding\s*:\s*0;[^}]*border\s*:\s*0;[^}]*background\s*:\s*transparent/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-drive-selected-bar\s*\{[^}]*padding\s*:\s*0 0 var\(--space-1\);[^}]*border\s*:\s*0;[^}]*background\s*:\s*transparent/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-form__section \+ \.admin-form__section\s*\{[^}]*margin-top\s*:\s*0/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-drive-type-grid\s*\{[^}]*grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);[^}]*width\s*:\s*100%/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-drive-type-card\s*\{[^}]*justify-self\s*:\s*stretch;[^}]*min-width\s*:\s*0;[^}]*min-height\s*:\s*82px;[^}]*border\s*:\s*1px solid transparent;[^}]*background\s*:\s*transparent;[^}]*box-shadow\s*:\s*none/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-drive-type-card:active,[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-card:focus-visible\s*\{[^}]*border-color\s*:\s*var\(--border-default\);[^}]*background\s*:\s*var\(--bg-surface\)/s
-  );
-  assert.match(
-    adminCss,
-    /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*\{\s*\.admin-modal--drive-form \.admin-drive-type-card:hover\s*\{[^}]*border-color\s*:\s*var\(--border-default\);[^}]*background\s*:\s*var\(--bg-surface\)/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-drive-type-card__icon,[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-card__icon\[data-kind\]\s*\{[^}]*width\s*:\s*auto;[^}]*height\s*:\s*auto;[^}]*background\s*:\s*transparent/s
-  );
-  assert.match(
-    adminCss,
-    /\.admin-modal--drive-form \.admin-drive-type-card__icon\.has-image,[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-card__icon\.has-image\[data-kind\]\s*\{[^}]*width\s*:\s*40px;[^}]*height\s*:\s*40px/s
-  );
-  assert.match(adminCss, /\.admin-drive-type-card__icon-img\s*\{[^}]*object-fit\s*:\s*contain/s);
-  assert.match(
-    adminCss,
-    /@media \(max-width:\s*520px\)\s*\{[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-grid\s*\{[^}]*grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);[^}]*justify-content\s*:\s*stretch/s
-  );
+test("drive dialogs share a bounded layout with a scrollable form body", () => {
+  assert.match(drivesPageSource, /title="编辑凭证"[\s\S]*?className="admin-modal--drive-form"/);
+  assert.match(adminCss, /\.admin-modal--drive-form\s*\{[^}]*max-height\s*:[^;]+;[^}]*overflow\s*:\s*hidden/s);
+  assert.match(adminCss, /\.admin-modal--drive-form \.admin-modal__body\s*\{[^}]*min-height\s*:\s*0;[^}]*overflow-y\s*:\s*auto/s);
 });
 
 test("initial add-drive type picker omits cancel and save footer actions", () => {
@@ -1059,7 +992,7 @@ test("initial add-drive type picker omits cancel and save footer actions", () =>
     drivesPageSource,
     /footer=\{form\.id \|\| createDriveTypeSelected \? \([\s\S]*?取消[\s\S]*?保存[\s\S]*?\) : undefined\}/
   );
-  assert.match(driveFormSource, /onTypeSelected\?\.\(\)/);
+  assert.match(driveFormSource, /onTypeSelected\?\.\(true\)/);
 });
 
 test("drive credential editor loads stored values on demand", () => {
@@ -1130,7 +1063,7 @@ test("mobile drive detail actions use an explicit two-by-two grid", () => {
   );
 });
 
-test("drive delete and credential confirm buttons use ordinary styling", () => {
+test("drive deletion uses ordinary styling and credential edits emphasize saving", () => {
   const detailViewSource = drivesPageSource.slice(
     drivesPageSource.indexOf("if (selectedDriveId && selectedDrive)"),
     drivesPageSource.indexOf("// --- List view ---")
@@ -1142,11 +1075,7 @@ test("drive delete and credential confirm buttons use ordinary styling", () => {
   assert.doesNotMatch(deleteDriveModalSource, /Trash2|确认删除|is-danger/);
   assert.match(
     detailViewSource,
-    /title="编辑网盘"[\s\S]*?className="admin-btn"\s+onClick=\{handleSave\}[\s\S]*?\{saving \? "确认中\.\.\." : "确认"\}/
-  );
-  assert.doesNotMatch(
-    detailViewSource,
-    /title="编辑网盘"[\s\S]*?className="admin-btn is-primary"[\s\S]*?\{saving \? "保存中\.\.\." : "保存"\}/
+    /title="编辑凭证"[\s\S]*?className="admin-btn is-primary"\s+onClick=\{handleSave\}[\s\S]*?\{saving \? "保存中\.\.\." : "保存更改"\}/
   );
 });
 

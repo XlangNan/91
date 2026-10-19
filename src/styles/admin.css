@@ -2609,135 +2609,133 @@ body.admin-mobile-nav-open {
   }
 }
 
+/* Shared by the create-drive and credential-edit dialogs. */
 .admin-modal--drive-form {
   width: min(520px, 100%);
-  min-height: min(440px, calc(100vh - 2 * var(--space-4)));
-  min-height: min(440px, calc(100dvh - 2 * var(--space-4)));
+  max-height: min(760px, calc(100dvh - 48px));
   display: flex;
   flex-direction: column;
-  border: 0;
-  box-shadow: none;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.admin-modal--drive-form::-webkit-scrollbar,
-.admin-modal--drive-form .admin-modal__body::-webkit-scrollbar {
-  display: none;
-}
-
-.admin-modal--drive-form .admin-modal__body {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.admin-modal--drive-form .admin-drive-type-picker {
-  align-content: center;
-  flex: 1 1 auto;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 20px;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 0.18);
 }
 
 .admin-modal--drive-form .admin-modal__header,
 .admin-modal--drive-form .admin-modal__footer {
+  flex-shrink: 0;
   border: 0;
-  background: var(--bg-surface);
+  background: transparent;
+}
+
+.admin-modal--drive-form .admin-modal__header {
+  padding: 24px 24px 16px;
+  font-size: var(--font-xl);
+  letter-spacing: -0.02em;
 }
 
 .admin-modal--drive-form .admin-modal__header .admin-btn {
+  width: 30px;
+  height: 30px;
   border-color: transparent;
   background: transparent;
+  color: var(--text-muted);
   box-shadow: none;
 }
 
+.admin-modal--drive-form .admin-modal__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px 24px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.admin-modal--drive-form .admin-modal__footer {
+  gap: var(--space-2);
+  padding: 0 24px 24px;
+}
+
+.admin-modal--drive-form .admin-modal__footer .admin-btn {
+  min-width: 88px;
+  min-height: 40px;
+  border-radius: 9px;
+}
+
+.admin-modal--drive-form .admin-form {
+  gap: var(--space-4);
+}
+
 .admin-modal--drive-form .admin-form__section {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
   padding: 0;
   border: 0;
   background: transparent;
 }
 
-.admin-modal--drive-form .admin-drive-selected-bar {
-  padding: 0 0 var(--space-1);
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  margin-bottom: var(--space-3);
-}
-
-.admin-modal--drive-form .admin-form__section + .admin-form__section {
-  margin-top: 0;
-}
-
-.admin-modal--drive-form .admin-form__section-label {
-  color: var(--text-default);
-  font-weight: var(--weight-medium);
-}
-
-.admin-modal--drive-form .admin-drive-type-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-3);
-  width: 100%;
-}
-
-.admin-modal--drive-form .admin-drive-type-card {
-  justify-self: stretch;
+.admin-modal--drive-form .admin-form__row {
   min-width: 0;
-  min-height: 82px;
-  gap: 8px;
-  padding: 10px 14px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  box-shadow: none;
+  gap: var(--space-2);
 }
 
-.admin-modal--drive-form .admin-drive-type-card:active,
-.admin-modal--drive-form .admin-drive-type-card:focus-visible {
-  border-color: var(--border-default);
-  background: var(--bg-surface);
-  box-shadow: none;
-  transform: none;
+.admin-modal--drive-form .admin-form__row input,
+.admin-modal--drive-form .admin-form__row select,
+.admin-modal--drive-form .admin-form__row textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--bg-elevated);
+  font-size: var(--font-base);
+  line-height: var(--line-normal);
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .admin-modal--drive-form .admin-drive-type-card:hover {
-    border-color: var(--border-default);
-    background: var(--bg-surface);
-    box-shadow: none;
-    transform: none;
-  }
+.admin-modal--drive-form .admin-password-input input {
+  padding-right: 42px;
 }
 
-.admin-modal--drive-form .admin-drive-type-card[data-kind]:active,
-.admin-modal--drive-form .admin-drive-type-card[data-kind]:focus-visible {
-  border-color: var(--border-default);
-  box-shadow: none;
+.admin-modal--drive-form .admin-form__row .admin-form-select {
+  padding-right: 36px;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .admin-modal--drive-form .admin-drive-type-card[data-kind]:hover {
-    border-color: var(--border-default);
-    box-shadow: none;
-  }
+.admin-modal--drive-form .admin-form__row textarea {
+  min-height: 88px;
+  font-size: var(--font-sm);
+  resize: vertical;
 }
 
-.admin-modal--drive-form .admin-drive-type-card__icon,
-.admin-modal--drive-form .admin-drive-type-card__icon[data-kind] {
-  width: auto;
-  height: auto;
-  border-radius: 0;
-  background: transparent;
+.admin-modal--drive-form .admin-form__row input:focus,
+.admin-modal--drive-form .admin-form__row select:focus,
+.admin-modal--drive-form .admin-form__row textarea:focus {
+  border-color: var(--border-accent);
+  box-shadow: 0 0 0 3px var(--accent-softer);
 }
 
-.admin-modal--drive-form .admin-drive-type-card__icon.has-image,
-.admin-modal--drive-form .admin-drive-type-card__icon.has-image[data-kind] {
-  width: 40px;
-  height: 40px;
-  background: transparent;
-  color: inherit;
+.admin-modal--drive-form .admin-form__section.admin-drive-root-section {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
 }
 
+.admin-modal--drive-form .admin-drive-selected-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.admin-modal--drive-form .admin-drive-selected-bar__icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+}
+
+.admin-drive-selected-bar__icon-img,
 .admin-drive-type-card__icon-img {
   display: block;
   width: 100%;
@@ -2746,23 +2744,166 @@ body.admin-mobile-nav-open {
   object-fit: contain;
 }
 
+.admin-modal--drive-form .admin-drive-selected-bar__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-modal--drive-form .admin-drive-selected-bar__name {
+  font-size: var(--font-md);
+  font-weight: var(--weight-medium);
+  color: var(--text-strong);
+}
+
+.admin-modal--drive-form .admin-drive-change-type {
+  padding: 6px 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+.admin-modal--drive-form .admin-drive-qr-login {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 12px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+}
+
+.admin-modal--drive-form .admin-drive-qr-login .admin-p123-qr {
+  display: contents;
+}
+
+.admin-modal--drive-form .admin-p123-qr__body {
+  grid-column: 1 / -1;
+}
+
+.admin-modal--drive-form .admin-p123-qr__meta:empty {
+  display: none;
+}
+
+.admin-modal--drive-form .admin-form__method-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-faint);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-regular);
+}
+
+.admin-modal--drive-form .admin-form__method-label::before,
+.admin-modal--drive-form .admin-form__method-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.admin-modal--drive-form .admin-drive-type-picker {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.admin-modal--drive-form .admin-drive-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.admin-modal--drive-form .admin-drive-type-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 66px;
+  padding: 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-strong);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.admin-modal--drive-form .admin-drive-type-card__icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+}
+
+.admin-modal--drive-form .admin-drive-type-card__label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-base);
+  font-weight: var(--weight-medium);
+}
+
+.admin-modal--drive-form .admin-drive-type-card__arrow {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  opacity: 0.6;
+  transition: opacity var(--transition-fast);
+}
+
+.admin-modal--drive-form .admin-drive-type-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.admin-modal--drive-form .admin-drive-type-card:active {
+  background: var(--bg-elevated);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .admin-modal--drive-form .admin-drive-type-card:hover,
+  .admin-modal--drive-form .admin-drive-change-type:hover,
+  .admin-modal--drive-form .admin-modal__header .admin-btn:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-elevated);
+    color: var(--text-strong);
+    box-shadow: none;
+  }
+
+  .admin-modal--drive-form .admin-drive-type-card:hover .admin-drive-type-card__arrow {
+    opacity: 1;
+  }
+}
+
 @media (max-width: 520px) {
-  .admin-modal--drive-form .admin-drive-type-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    justify-content: stretch;
-    gap: var(--space-2);
+  .admin-modal--drive-form .admin-modal__header {
+    padding: 20px 20px 16px;
+  }
+
+  .admin-modal--drive-form .admin-modal__body {
+    padding: 4px 20px 20px;
+  }
+
+  .admin-modal--drive-form .admin-modal__footer {
+    padding: 0 20px 20px;
   }
 
   .admin-modal--drive-form .admin-drive-type-card {
-    min-width: 0;
-    min-height: 74px;
-    padding: 8px 4px;
+    gap: 10px;
+    min-height: 62px;
+    padding: 10px;
   }
 
-  .admin-modal--drive-form .admin-drive-type-card__icon.has-image,
-  .admin-modal--drive-form .admin-drive-type-card__icon.has-image[data-kind] {
-    width: 34px;
-    height: 34px;
+  .admin-modal--drive-form .admin-drive-type-card__icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .admin-modal--drive-form .admin-drive-type-card__label {
+    font-size: var(--font-sm);
+  }
+
+  .admin-modal--drive-form .admin-drive-type-card__arrow {
+    display: none;
   }
 }
 
@@ -5429,222 +5570,6 @@ body.admin-mobile-nav-open {
   }
 }
 
-/* =========================================================
- * Drive Type Picker (添加网盘 - 类型选择卡片)
- * ========================================================= */
-.admin-drive-type-picker {
-  display: grid;
-  gap: var(--space-4);
-}
-
-.admin-drive-type-picker__hint {
-  margin: 0;
-  font-size: var(--font-sm);
-  color: var(--text-muted);
-}
-
-.admin-drive-type-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--space-3);
-}
-
-.admin-drive-type-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: var(--space-4) var(--space-3) var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  cursor: pointer;
-  text-align: center;
-  transition:
-    border-color var(--transition-fast),
-    background var(--transition-fast),
-    box-shadow var(--transition-fast),
-    transform var(--transition-fast);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .admin-drive-type-card:hover {
-    background: var(--bg-surface);
-    transform: translateY(-2px);
-  }
-}
-
-.admin-drive-type-card:active {
-  transform: translateY(0);
-}
-
-.admin-drive-type-card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* 悬停时用各自品牌色描边 + 光晕 */
-@media (hover: hover) and (pointer: fine) {
-  .admin-drive-type-card[data-kind="p115"]:hover    { border-color: var(--drive-p115);       box-shadow: 0 4px 18px rgba(245,107,118,.22); }
-  .admin-drive-type-card[data-kind="p123"]:hover    { border-color: var(--drive-p123);       box-shadow: 0 4px 18px rgba(34,184,200,.2); }
-  .admin-drive-type-card[data-kind="pikpak"]:hover  { border-color: var(--drive-pikpak);     box-shadow: 0 4px 18px rgba(138,109,255,.22); }
-  .admin-drive-type-card[data-kind="onedrive"]:hover { border-color: var(--drive-onedrive); box-shadow: 0 4px 18px rgba(76,171,234,.2); }
-  .admin-drive-type-card[data-kind="googledrive"]:hover { border-color: #4285f4;            box-shadow: 0 4px 18px rgba(66,133,244,.2); }
-  .admin-drive-type-card[data-kind="localstorage"]:hover { border-color: var(--drive-localstorage); box-shadow: 0 4px 18px rgba(53,184,143,.2); }
-  .admin-drive-type-card[data-kind="quark"]:hover   { border-color: var(--drive-quark);     box-shadow: 0 4px 18px rgba(91,141,239,.2); }
-  .admin-drive-type-card[data-kind="wopan"]:hover   { border-color: var(--drive-wopan);     box-shadow: 0 4px 18px rgba(255,138,60,.2); }
-  .admin-drive-type-card[data-kind="guangyapan"]:hover { border-color: var(--drive-guangyapan); box-shadow: 0 4px 18px rgba(48,195,168,.2); }
-  .admin-drive-type-card[data-kind="webdav"]:hover { border-color: var(--drive-webdav); box-shadow: 0 4px 18px rgba(42,167,200,.2); }
-}
-
-.admin-drive-type-card__icon {
-  display: grid;
-  place-items: center;
-  width: 48px;
-  height: 48px;
-  border-radius: var(--radius-md);
-  font-size: 14px;
-  font-weight: var(--weight-bold);
-  letter-spacing: -0.02em;
-  /* 默认色，未匹配 data-kind 时的兜底 */
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-/* 各网盘品牌色图标 */
-.admin-drive-type-card__icon[data-kind="p115"]        { background: rgba(245,107,118,.14); color: var(--drive-p115); }
-.admin-drive-type-card__icon[data-kind="p123"]        { background: rgba(34,184,200,.14);  color: var(--drive-p123); }
-.admin-drive-type-card__icon[data-kind="pikpak"]      { background: rgba(138,109,255,.14); color: var(--drive-pikpak); }
-.admin-drive-type-card__icon[data-kind="onedrive"]    { background: rgba(76,171,234,.14);  color: var(--drive-onedrive); }
-.admin-drive-type-card__icon[data-kind="googledrive"] { background: rgba(66,133,244,.14);  color: #4285f4; }
-.admin-drive-type-card__icon[data-kind="localstorage"]{ background: rgba(53,184,143,.14);  color: var(--drive-localstorage); }
-.admin-drive-type-card__icon[data-kind="quark"]       { background: rgba(91,141,239,.14);  color: var(--drive-quark); }
-.admin-drive-type-card__icon[data-kind="wopan"]       { background: rgba(255,138,60,.14);  color: var(--drive-wopan); }
-.admin-drive-type-card__icon[data-kind="guangyapan"]  { background: rgba(48,195,168,.14);  color: var(--drive-guangyapan); }
-.admin-drive-type-card__icon[data-kind="webdav"]      { background: rgba(42,167,200,.14);  color: var(--drive-webdav); }
-
-.admin-drive-type-card__label {
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  color: var(--text-strong);
-  line-height: 1.2;
-}
-
-@media (max-width: 520px) {
-  .admin-drive-type-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: var(--space-2);
-  }
-
-  .admin-drive-type-card {
-    min-height: 94px;
-    gap: 6px;
-    padding: 10px 6px 8px;
-    border-radius: var(--radius-sm);
-  }
-
-  .admin-drive-type-card__icon {
-    width: 38px;
-    height: 38px;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-sm);
-    letter-spacing: 0;
-  }
-
-  .admin-drive-type-card__label {
-    font-size: var(--font-sm);
-    line-height: 1.2;
-    overflow-wrap: anywhere;
-  }
-}
-
-/* =========================================================
- * Drive Selected Bar (选完类型后在表单顶部显示的条)
- * ========================================================= */
-.admin-drive-selected-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 12px var(--space-4);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  margin-bottom: var(--space-4);
-}
-
-.admin-drive-selected-bar__icon {
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: var(--weight-bold);
-  letter-spacing: -0.02em;
-  /* 兜底 */
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.admin-drive-selected-bar__icon[data-kind="p115"]        { background: rgba(245,107,118,.14); color: var(--drive-p115); }
-.admin-drive-selected-bar__icon[data-kind="p123"]        { background: rgba(34,184,200,.14);  color: var(--drive-p123); }
-.admin-drive-selected-bar__icon[data-kind="pikpak"]      { background: rgba(138,109,255,.14); color: var(--drive-pikpak); }
-.admin-drive-selected-bar__icon[data-kind="onedrive"]    { background: rgba(76,171,234,.14);  color: var(--drive-onedrive); }
-.admin-drive-selected-bar__icon[data-kind="googledrive"] { background: rgba(66,133,244,.14);  color: #4285f4; }
-.admin-drive-selected-bar__icon[data-kind="localstorage"]{ background: rgba(53,184,143,.14);  color: var(--drive-localstorage); }
-.admin-drive-selected-bar__icon[data-kind="quark"]       { background: rgba(91,141,239,.14);  color: var(--drive-quark); }
-.admin-drive-selected-bar__icon[data-kind="wopan"]       { background: rgba(255,138,60,.14);  color: var(--drive-wopan); }
-.admin-drive-selected-bar__icon[data-kind="guangyapan"]  { background: rgba(48,195,168,.14);  color: var(--drive-guangyapan); }
-.admin-drive-selected-bar__icon[data-kind="webdav"]      { background: rgba(42,167,200,.14);  color: var(--drive-webdav); }
-
-.admin-drive-selected-bar__icon.has-image[data-kind] {
-  background: transparent;
-  color: inherit;
-  box-shadow: none;
-}
-
-.admin-drive-selected-bar__icon-img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: 9px;
-  object-fit: contain;
-}
-
-.admin-drive-selected-bar__text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.admin-drive-selected-bar__name {
-  font-size: var(--font-md);
-  font-weight: var(--weight-semibold);
-  color: var(--text-strong);
-}
-
-.admin-form__section {
-  display: grid;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
-
-.admin-form__section + .admin-form__section {
-  margin-top: var(--space-2);
-}
-
-.admin-form__section-label {
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  color: var(--text-strong);
-  margin: 0;
-}
 /* =========================================================
  * Configuration panel
  *

@@ -568,7 +568,7 @@ export function DrivesPage() {
 
         <Modal
           open={modalOpen}
-          title="编辑网盘"
+          title="编辑凭证"
           className="admin-modal--drive-form"
           onClose={requestCloseDriveModal}
           footer={
@@ -578,11 +578,11 @@ export function DrivesPage() {
               </button>
               <button
                 type="button"
-                className="admin-btn"
+                className="admin-btn is-primary"
                 onClick={handleSave}
                 disabled={saving}
               >
-                {saving ? "确认中..." : "确认"}
+                {saving ? "保存中..." : "保存更改"}
               </button>
             </>
           }
@@ -739,7 +739,7 @@ export function DrivesPage() {
 
       <Modal
         open={modalOpen}
-        title={form.id && list.find((x) => x.id === form.id) ? "编辑网盘" : "添加网盘"}
+        title={form.id && list.find((x) => x.id === form.id) ? "编辑凭证" : "添加网盘"}
         className="admin-modal--drive-form"
         onClose={requestCloseDriveModal}
         footer={form.id || createDriveTypeSelected ? (
@@ -762,7 +762,7 @@ export function DrivesPage() {
           form={form}
           onChange={handleCreateFormChange}
           isEdit={!!list.find((x) => x.id === form.id)}
-          onTypeSelected={() => setCreateDriveTypeSelected(true)}
+          onTypeSelected={setCreateDriveTypeSelected}
         />
       </Modal>
       <DeleteDriveModal
