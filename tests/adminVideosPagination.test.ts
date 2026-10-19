@@ -235,9 +235,9 @@ test("admin video pagination clamps stale deep links after totals load", () => {
   const blacklistSource = videosPageSource.slice(videosPageSource.indexOf("function BlacklistTab"));
   // Both tabs must wait for the active query, not just any previous request,
   // to settle before clamping a page restored from the URL.
-  const clamp = /listQuerySettled\s*&&\s*page\s*>\s*totalPages[\s\S]{0,40}setPage\(totalPages\)/;
-  assert.match(currentSource, clamp);
-  assert.match(blacklistSource, clamp);
+  const paginationSync = /useAdminPaginationSync\(\{\s*active: routeActive, page, pageSize, totalPages, settled: listQuerySettled, setPage,/;
+  assert.match(currentSource, paginationSync);
+  assert.match(blacklistSource, paginationSync);
   assert.equal(
     Array.from(videosPageSource.matchAll(/const listQuerySettled = (?:videos|blacklist)\.ready && !(?:videos|blacklist)\.refreshing && !(?:videos|blacklist)\.failure;/g)).length,
     2

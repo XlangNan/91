@@ -36,6 +36,7 @@ import {
 } from "./videosSearchParams";
 import { useAdminFloatingActionSpace } from "./useAdminFloatingActionSpace";
 import { useAdminRouteActive } from "./AdminRouteCache";
+import { useAdminPaginationSync } from "./useAdminPaginationSync";
 import { useAdminResource } from "./useAdminResource";
 import { useAuth } from "./AuthContext";
 import { useTelegramAvailability } from "./telegram/useTelegramAvailability";
@@ -363,7 +364,6 @@ function CurrentVideosTab({
     DESKTOP_CURRENT_VIDEOS_PAGE_SIZE,
     MOBILE_CURRENT_VIDEOS_PAGE_SIZE
   );
-  const previousPageSizeRef = useRef(pageSize);
   const { show } = useToast();
   const activeListQueryKey = JSON.stringify([
     page,
@@ -402,12 +402,6 @@ function CurrentVideosTab({
   }, [searchKeyword, sourceDriveId, sourceCrawlerId, sourceKind, appliedFilters]);
 
   useEffect(() => {
-    if (previousPageSizeRef.current === pageSize) return;
-    previousPageSizeRef.current = pageSize;
-    setPage(1);
-  }, [pageSize, setPage]);
-
-  useEffect(() => {
     if (trackedRegenCount === 0 || !videos.ready) return;
     const now = Date.now();
     setRegenPreviewById((current) => {
@@ -435,9 +429,9 @@ function CurrentVideosTab({
   const listQueryPending = loading;
   const listQuerySettled = videos.ready && !videos.refreshing && !videos.failure;
   const showInitialLoading = (displayedPage === null || listItems.length === 0) && !loadError && listQueryPending;
-  useEffect(() => {
-    if (listQuerySettled && page > totalPages) setPage(totalPages);
-  }, [listQuerySettled, page, totalPages, setPage]);
+  useAdminPaginationSync({
+    active: routeActive, page, pageSize, totalPages, settled: listQuerySettled, setPage,
+  });
   const showPagination = totalPages > 1;
   const activeAdvancedFilterCount = countVideoAdvancedFilters(appliedFilters);
   const hasActiveSearch =
@@ -829,7 +823,6 @@ function BlacklistTab({
     DESKTOP_BLACKLIST_PAGE_SIZE,
     MOBILE_BLACKLIST_PAGE_SIZE
   );
-  const previousPageSizeRef = useRef(pageSize);
   const { show } = useToast();
   const activeListQueryKey = JSON.stringify([page, pageSize, searchKeyword]);
   const blacklist = useAdminResource<api.AdminBlacklistList | null>(
@@ -867,12 +860,6 @@ function BlacklistTab({
   }, [sourceDeleteStatus, sourceDelete.refreshing, routeActive, refresh, show]);
 
   useEffect(() => {
-    if (previousPageSizeRef.current === pageSize) return;
-    previousPageSizeRef.current = pageSize;
-    setPage(1);
-  }, [pageSize, setPage]);
-
-  useEffect(() => {
     setSelectedIds(new Set());
   }, [searchKeyword]);
 
@@ -882,9 +869,9 @@ function BlacklistTab({
   const listQueryPending = loading;
   const listQuerySettled = blacklist.ready && !blacklist.refreshing && !blacklist.failure;
   const showInitialLoading = (displayedPage === null || list.length === 0) && !loadError && listQueryPending;
-  useEffect(() => {
-    if (listQuerySettled && page > totalPages) setPage(totalPages);
-  }, [listQuerySettled, page, totalPages, setPage]);
+  useAdminPaginationSync({
+    active: routeActive, page, pageSize, totalPages, settled: listQuerySettled, setPage,
+  });
   const showPagination = totalPages > 1;
   const sourceDeleteRunning = !!sourceDeleteStatus?.running;
   const hasActiveSearch = searchKeyword.trim().length > 0;
