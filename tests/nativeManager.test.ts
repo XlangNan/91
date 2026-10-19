@@ -185,6 +185,9 @@ test("privileged native actions retain their command and arguments when elevated
     ["install"], ["start"], ["stop"], ["restart"], ["update"], ["telegram"], ["uninstall"],
     ["reset-password", "--user-id", "7"],
   ];
+  const archive = join(f.root, "local package.tar.gz");
+  writeFileSync(archive, "package");
+  actions.push(["install", "--package", archive], ["update", "--package", archive]);
   for (const args of actions) {
     const result = spawnSync("bash", [installer, ...args], { encoding: "utf8", env: f.env });
     assert.equal(result.status, 0, result.stderr);

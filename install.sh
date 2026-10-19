@@ -8,6 +8,8 @@ SERVICE_NAME="${SERVICE_NAME:-video-site-91}"
 FRONTEND_PORT_WAS_SET="${FRONTEND_PORT+x}"
 FRONTEND_PORT="${FRONTEND_PORT:-9191}"
 VERSION="${VERSION:-latest}"
+PACKAGE_FILE=""
+PACKAGE_SHA256=""
 GH_PROXY="${GH_PROXY:-}"
 CONFIGURE_UFW="${CONFIGURE_UFW:-1}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
@@ -46,10 +48,12 @@ usage() {
   case "$action" in
     install)
       cat <<EOF
-Usage: sudo bash install.sh [install]
+Usage: sudo bash install.sh [install] [--package FILE]
 
 Install the prebuilt release to $INSTALL_PATH and start the native service.
 Running install.sh without a command also installs 91.
+
+  --package FILE  Use a local release archive instead of downloading
 
 Environment:
   INSTALL_PATH=$INSTALL_PATH
@@ -62,9 +66,13 @@ EOF
       ;;
     update)
       cat <<EOF
-Usage: 91 update
+Usage: 91 update [--package FILE]
 
 Update the native installation; keep configuration and data, then restart 91.
+Local packages are identified by SHA-256 and skip manager self-update.
+
+  --package FILE  Use a local release archive instead of downloading
+
 Environment:
   VERSION=$VERSION          Release tag or latest
   FORCE_UPDATE=$FORCE_UPDATE          Set to 1 to reinstall the same version
@@ -528,12 +536,27 @@ fetch_and_unpack() {
   local tmp archive url root
   tmp="$(mktemp -d)"
   archive="$tmp/$(asset_name)"
-  url="$(download_base_url)/$(asset_name)"
-  log "downloading $url"
-  if ! download_file "$url" "$archive"; then
-    warn "download failed: $url"
-    rm -rf "$tmp"
-    return 1
+  if [[ -n "$PACKAGE_FILE" ]]; then
+    log "using local package $PACKAGE_FILE"
+    if ! cp -- "$PACKAGE_FILE" "$archive"; then
+      rm -rf "$tmp"
+      return 1
+    fi
+    local checksum
+    checksum="$(sha256sum -- "$archive")"
+    if [[ "${checksum%% *}" != "$PACKAGE_SHA256" ]]; then
+      warn "local package changed during installation; retry with the current file"
+      rm -rf "$tmp"
+      return 1
+    fi
+  else
+    url="$(download_base_url)/$(asset_name)"
+    log "downloading $url"
+    if ! download_file "$url" "$archive"; then
+      warn "download failed: $url"
+      rm -rf "$tmp"
+      return 1
+    fi
   fi
 
   if ! tar -xzf "$archive" -C "$tmp"; then
@@ -565,6 +588,10 @@ installed_version() {
 }
 
 target_version() {
+  if [[ -n "$PACKAGE_FILE" ]]; then
+    printf 'local-%s' "${PACKAGE_SHA256:0:12}"
+    return
+  fi
   if [[ "$VERSION" != "latest" ]]; then
     printf '%s' "$VERSION"
     return
@@ -659,7 +686,7 @@ update_app() {
   check_system
   [[ -f "$INSTALL_PATH/server" ]] || die "not installed at $INSTALL_PATH"
 
-  if self_update_manager; then
+  if [[ -z "$PACKAGE_FILE" ]] && self_update_manager; then
     log "re-running update with latest manager script"
     exec_latest_manager_update
   fi
@@ -1141,7 +1168,12 @@ show_menu() {
 
 main() {
   local action="${1:-}"
-  if [[ -z "$action" ]]; then
+  local -a action_args
+  PACKAGE_FILE=""
+  PACKAGE_SHA256=""
+  if [[ "$action" == --package ]]; then
+    action="install"
+  elif [[ -z "$action" ]]; then
     if is_manager_invocation; then
       show_menu
       return
@@ -1159,11 +1191,41 @@ main() {
       return 2
       ;;
   esac
+  action_args=("$@")
   if (( $# == 1 )) && [[ "$1" == -h || "$1" == --help ]]; then
     usage "$action"
     return 0
   fi
-  if [[ "$action" != reset-password ]] && (( $# )); then
+  if [[ "$action" == install || "$action" == update ]]; then
+    while (( $# )); do
+      case "$1" in
+        -h|--help)
+          usage "$action"
+          return 0
+          ;;
+        --package)
+          if (( $# < 2 )) || [[ -z "$2" || "$2" == -* || -n "$PACKAGE_FILE" ]]; then
+            warn "--package requires one file path and may only be specified once"
+            return 2
+          fi
+          PACKAGE_FILE="$2"
+          shift 2
+          ;;
+        *)
+          warn "unexpected arguments for $action: $*"
+          usage "$action" >&2
+          return 2
+          ;;
+      esac
+    done
+    if [[ -n "$PACKAGE_FILE" ]]; then
+      [[ -f "$PACKAGE_FILE" && -r "$PACKAGE_FILE" ]] || { warn "local package is not a readable file: $PACKAGE_FILE"; return 2; }
+      command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required for local packages"
+      PACKAGE_FILE="$(cd -- "$(dirname -- "$PACKAGE_FILE")" && pwd -P)/$(basename -- "$PACKAGE_FILE")"
+      PACKAGE_SHA256="$(sha256sum < "$PACKAGE_FILE")"
+      PACKAGE_SHA256="${PACKAGE_SHA256%% *}"
+    fi
+  elif [[ "$action" != reset-password ]] && (( $# )); then
     warn "unexpected arguments for $action: $*"
     usage "$action" >&2
     return 2
@@ -1171,11 +1233,11 @@ main() {
 
   case "$action" in
     install)
-      need_root "$action" "$@"
+      need_root "$action" "${action_args[@]}"
       install_app
       ;;
     update)
-      need_root "$action" "$@"
+      need_root "$action" "${action_args[@]}"
       update_app
       ;;
     start)
