@@ -42,48 +42,108 @@ die() {
 }
 
 usage() {
-  cat <<EOF
-Usage:
-  sudo bash install.sh [install]
-  91 [update|restart|stop|status|logs|uninstall|reset-password]
-  91 reset-password [--user-id ID] [--config PATH]
+  local action="${1:-}"
+  case "$action" in
+    install)
+      cat <<EOF
+Usage: sudo bash install.sh [install]
 
-Default action:
-  install.sh with no args downloads the prebuilt release package and starts the service.
-  91 with no args opens the management menu.
+Install the prebuilt release to $INSTALL_PATH and start the native service.
+Running install.sh without a command also installs 91.
 
-Actions:
-  install    Install to $INSTALL_PATH
-  update     Refresh manager script, download latest release, and keep config/data
-  restart    Restart service
-  stop       Stop service
-  status     Show service status
-  logs       Follow service logs
-  uninstall  Remove service and optionally delete installed files
-  reset-password  Generate a random 12-character password for an existing user
-
-Options via environment:
-  GITHUB_REPO=$GITHUB_REPO
-  VERSION=$VERSION              latest or a release tag such as v0.1.0
+Environment:
   INSTALL_PATH=$INSTALL_PATH
   FRONTEND_PORT=$FRONTEND_PORT
+  VERSION=$VERSION          Release tag or latest
   GH_PROXY=$GH_PROXY
-  INSTALL_DEPS=$INSTALL_DEPS
-  CONFIGURE_UFW=$CONFIGURE_UFW
-  SELF_UPDATE=$SELF_UPDATE
-  FORCE_UPDATE=$FORCE_UPDATE
-  UNINSTALL_DELETE_FILES=0      Set to 1 for non-interactive uninstall to delete $INSTALL_PATH
-  INSTALL_SCRIPT_REF=$INSTALL_SCRIPT_REF
-  INSTALL_SCRIPT_URL=$INSTALL_SCRIPT_URL
-  SERVICE_READY_TIMEOUT=$SERVICE_READY_TIMEOUT
-
-Examples:
-  sudo bash install.sh
-  FRONTEND_PORT=8080 sudo -E bash install.sh
-  91
-  91 update
-  91 logs
+  INSTALL_DEPS=$INSTALL_DEPS          Set to 0 to skip dependency installation
+  CONFIGURE_UFW=$CONFIGURE_UFW         Set to 0 to skip UFW configuration
 EOF
+      ;;
+    update)
+      cat <<EOF
+Usage: 91 update
+
+Update the native installation; keep configuration and data, then restart 91.
+Environment:
+  VERSION=$VERSION          Release tag or latest
+  FORCE_UPDATE=$FORCE_UPDATE          Set to 1 to reinstall the same version
+  GH_PROXY=$GH_PROXY
+EOF
+      ;;
+    start|restart)
+      printf 'Usage: 91 %s\n\n' "$action"
+      if [[ "$action" == start ]]; then
+        printf 'Start the native service and wait for readiness.\n'
+      else
+        printf 'Restart the native service and wait for readiness.\n'
+      fi
+      printf '\nEnvironment:\n  SERVICE_READY_TIMEOUT=%s  Readiness timeout in seconds\n' "$SERVICE_READY_TIMEOUT"
+      ;;
+    stop)
+      printf 'Usage: 91 stop\n\nStop the native service.\n'
+      ;;
+    status)
+      printf 'Usage: 91 status\n\nShow the native service status; exit code follows systemctl.\n'
+      ;;
+    logs)
+      printf 'Usage: 91 logs\n\nFollow native service logs. Press Ctrl+C to stop following.\n'
+      ;;
+    reset-password)
+      cat <<'EOF'
+Usage: 91 reset-password [--user-id ID] [--config PATH]
+
+Generate a random 12-character password for an existing user.
+The native service may be stopped.
+
+  --user-id ID   User to reset; omitted to select interactively
+  --config PATH  Existing configuration file; defaults to the installation config
+EOF
+      ;;
+    telegram)
+      cat <<EOF
+Usage: 91 telegram
+
+Configure and start the local Telegram Bot API, then restart native 91.
+Requires a local Linux Docker Engine, Docker Compose and Python 3.
+Configuration: $INSTALL_PATH/telegram.yml (backed up before changes).
+
+Provide TELEGRAM_API_ID and TELEGRAM_API_HASH through the environment,
+reuse existing credentials, or enter them interactively (from my.telegram.org).
+Set the Bot Token, allowed user IDs and Telegram switch in the website panel.
+EOF
+      ;;
+    uninstall)
+      cat <<EOF
+Usage: 91 uninstall
+
+Remove the native service, Bot API resources and management commands.
+Permanently delete the installation, configured application data and database,
+including Telegram data in custom locations. Keep shared Docker resources.
+EOF
+      ;;
+    *)
+      cat <<'EOF'
+Usage: 91 [COMMAND] [options]
+
+Manage the native (systemd) deployment of 91.
+
+  install         Install 91
+  update          Update 91
+  start           Start service
+  restart         Restart service
+  stop            Stop service
+  status          Show service status
+  logs            Follow service logs
+  telegram        Set up the local Telegram Bot API
+  reset-password  Reset a user's password
+  uninstall       Uninstall 91 and related services
+
+Run '91 COMMAND --help' for command details.
+EOF
+      ;;
+  esac
+  printf '\n  -h, --help     Show command help\n'
 }
 
 is_manager_invocation() {
@@ -370,132 +430,6 @@ listen_port_from_config() {
   printf '%s' "$FRONTEND_PORT"
 }
 
-append_unique() {
-  local value="$1"
-  shift
-  for existing in "$@"; do
-    [[ "$existing" == "$value" ]] && return 1
-  done
-  printf '%s' "$value"
-}
-
-app_service_names() {
-  local names=()
-  local name
-  for name in "$SERVICE_NAME" "$APP_NAME" video-site-91 video-site-backend video-site-frontend; do
-    [[ -n "$name" ]] || continue
-    if append_unique "$name" "${names[@]}" >/dev/null; then
-      names+=("$name")
-    fi
-  done
-  printf '%s\n' "${names[@]}"
-}
-
-stop_app_services() {
-  local name unit
-  while IFS= read -r name; do
-    [[ -n "$name" ]] || continue
-    unit="${name}.service"
-    systemctl disable --now "$unit" 2>/dev/null || systemctl stop "$unit" 2>/dev/null || true
-    rm -f "/etc/systemd/system/$unit"
-  done < <(app_service_names)
-  systemctl daemon-reload
-}
-
-remove_app_containers() {
-  command -v docker >/dev/null 2>&1 || return 0
-
-  local names=()
-  local name
-  for name in "$SERVICE_NAME" "$APP_NAME" video-site-91; do
-    [[ -n "$name" ]] || continue
-    if append_unique "$name" "${names[@]}" >/dev/null; then
-      names+=("$name")
-    fi
-  done
-
-  for name in "${names[@]}"; do
-    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$name"; then
-      log "removing docker container $name"
-      docker rm -f "$name" >/dev/null 2>&1 || true
-    fi
-  done
-}
-
-pids_listening_on_port() {
-  local port="$1"
-  [[ "$port" =~ ^[0-9]+$ ]] || return 0
-  command -v ss >/dev/null 2>&1 || return 0
-
-  ss -ltnp 2>/dev/null \
-    | awk -v port="$port" '$4 ~ ":" port "$" {print}' \
-    | grep -oE 'pid=[0-9]+' \
-    | cut -d= -f2 \
-    | sort -u || true
-}
-
-process_looks_like_app() {
-  local pid="$1"
-  local exe="" cmd=""
-  exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-  cmd="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
-
-  [[ "$exe" == "$INSTALL_PATH/server" ]] && return 0
-  [[ "$cmd" == *"$INSTALL_PATH"* ]] && return 0
-  [[ "$cmd" == *"VIDEO_FRONTEND_DIR=$INSTALL_PATH/dist"* ]] && return 0
-  [[ "$cmd" == *"VIDEO_CONFIG=$INSTALL_PATH/config.yaml"* ]] && return 0
-  [[ "$cmd" == *"video-site-91"* ]] && return 0
-  return 1
-}
-
-stop_lingering_app_processes() {
-  local ports=("$@")
-  local port pid pids=()
-
-  for port in "${ports[@]}"; do
-    [[ "$port" =~ ^[0-9]+$ ]] || continue
-    while IFS= read -r pid; do
-      [[ -n "$pid" ]] || continue
-      process_looks_like_app "$pid" || continue
-      if append_unique "$pid" "${pids[@]}" >/dev/null; then
-        pids+=("$pid")
-      fi
-    done < <(pids_listening_on_port "$port")
-  done
-
-  if (( ${#pids[@]} == 0 )); then
-    return
-  fi
-
-  warn "stopping lingering app process(es): ${pids[*]}"
-  kill "${pids[@]}" 2>/dev/null || true
-  sleep 1
-
-  local alive=()
-  for pid in "${pids[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      alive+=("$pid")
-    fi
-  done
-  if (( ${#alive[@]} > 0 )); then
-    warn "force killing lingering app process(es): ${alive[*]}"
-    kill -9 "${alive[@]}" 2>/dev/null || true
-  fi
-}
-
-warn_remaining_listeners() {
-  local ports=("$@")
-  local port pid cmd
-  for port in "${ports[@]}"; do
-    [[ "$port" =~ ^[0-9]+$ ]] || continue
-    while IFS= read -r pid; do
-      [[ -n "$pid" ]] || continue
-      cmd="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
-      warn "port $port is still listening after uninstall: pid=$pid ${cmd:-unknown}"
-    done < <(pids_listening_on_port "$port")
-  done
-}
-
 has_interactive_tty() {
   [[ -t 0 ]]
 }
@@ -506,7 +440,7 @@ confirm_uninstall_app() {
   fi
 
   local confirm=""
-  printf '确认卸载 91 吗？这会停止服务、移除管理命令，并可选择是否删除项目文件。[y/N]: ' >/dev/tty
+  printf 'Permanently delete 91, its configuration and all application and Telegram data? [y/N]: ' >/dev/tty
   IFS= read -r confirm </dev/tty || confirm=""
   case "$confirm" in
     [yY]) return 0 ;;
@@ -517,30 +451,12 @@ confirm_uninstall_app() {
   esac
 }
 
-delete_install_path_requested() {
-  if [[ "${UNINSTALL_DELETE_FILES:-0}" == "1" ]]; then
-    return 0
-  fi
-  if ! has_interactive_tty; then
-    return 1
-  fi
-
-  local confirm=""
-  printf '删除 %s 里的程序、配置和数据吗？[y/N]: ' "$INSTALL_PATH" >/dev/tty
-  IFS= read -r confirm </dev/tty || confirm=""
-  case "$confirm" in
-    [yY]) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 service_health_url() {
   printf 'http://127.0.0.1:%s/admin/api/setup' "$(listen_port_from_config)"
 }
 
 local_service_curl() {
-  # 健康检查只访问本机。显式忽略 ~/.curlrc 和所有代理设置，避免服务器为
-  # GitHub 下载配置 HTTP_PROXY/ALL_PROXY 后，127.0.0.1 也被错误发往代理。
+  # Local health checks must bypass curl settings and download proxy variables.
   curl --disable --noproxy '*' "$@"
 }
 
@@ -583,7 +499,7 @@ wait_for_service_ready() {
   done
 
   warn "service readiness check timed out after ${SERVICE_READY_TIMEOUT}s: $url"
-  # 最后一次探测保留 curl 错误，避免 90 秒内完全没有可操作的诊断信息。
+  # Show curl errors on the final probe so readiness failures have diagnostics.
   if local_service_curl -fsS --connect-timeout 2 --max-time 5 "$url" >/dev/null; then
     log "service is ready"
     return 0
@@ -713,15 +629,15 @@ show_success() {
   version="$(head -n1 "$VERSION_FILE" 2>/dev/null || echo unknown)"
 
   echo
-  printf '%b安装完成%b\n' "$GREEN" "$RESET"
-  echo "版本：$version"
-  [[ -n "$local_ip" ]] && echo "局域网：http://${local_ip}:${FRONTEND_PORT}/"
-  [[ -n "$public_ip" ]] && echo "公网：  http://${public_ip}:${FRONTEND_PORT}/"
-  echo "后台：  http://服务器IP:${FRONTEND_PORT}/admin"
-  echo "数据：  $INSTALL_PATH/data"
+  printf '%bInstallation complete%b\n' "$GREEN" "$RESET"
+  echo "Version: $version"
+  [[ -n "$local_ip" ]] && echo "Local:  http://${local_ip}:${FRONTEND_PORT}/"
+  [[ -n "$public_ip" ]] && echo "Public: http://${public_ip}:${FRONTEND_PORT}/"
+  echo "Admin:  http://SERVER_IP:${FRONTEND_PORT}/admin"
+  echo "Data:   $INSTALL_PATH/data"
   echo
-  echo "首次访问后台时会要求设置管理员用户名和密码。"
-  echo "管理命令：91 或 91 status | logs | update | restart | stop"
+  echo "Set the admin username and password on your first visit."
+  echo "Run '91' for the management menu or '91 --help' for commands."
 }
 
 install_app() {
@@ -782,36 +698,387 @@ update_app() {
   log "updated"
 }
 
-uninstall_app() {
-  local listen_port port ports=()
+validate_uninstall_paths() {
+  python3 - "$1" "$INSTALL_PATH" "${BASH_SOURCE[0]}" "${2:-}" <<'PY'
+import json
+import os
+import sys
+
+plan_path, installation, script, incoming = sys.argv[1:]
+installation = os.path.abspath(installation)
+real_installation = os.path.realpath(installation)
+protected = {
+    os.path.realpath(path) for path in (
+        "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/media", "/mnt",
+        "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/tmp", "/usr", "/var",
+        "/var/lib", "/var/lib/docker", "/var/lib/containerd", os.path.expanduser("~"),
+    )
+}
+
+def contains(parent, child):
+    return os.path.commonpath((parent, child)) == parent
+
+real_script = os.path.realpath(script)
+if not contains(real_installation, real_script):
+    protected.add(real_script)
+
+plan = {"directories": [installation], "files": []}
+if os.path.exists(plan_path):
+    with open(plan_path) as stream:
+        plan = json.load(stream)
+if incoming:
+    with open(incoming) as stream:
+        additions = json.load(stream)
+    if "data_dir" in additions or "db_path" in additions:
+        if not all(isinstance(additions.get(key), str) and additions[key] for key in ("data_dir", "db_path")):
+            sys.exit("Invalid storage path report; uninstall cancelled")
+        plan["directories"].append(additions["data_dir"])
+        database = additions["db_path"]
+        if not os.path.isabs(database):
+            sys.exit("Database path must be absolute; uninstall cancelled")
+        for base in {database, os.path.realpath(database)}:
+            plan["files"].extend(base + suffix for suffix in ("", "-wal", "-shm", "-journal"))
+    else:
+        if not isinstance(additions.get("directories"), list) or not isinstance(additions.get("files"), list):
+            sys.exit("Invalid cleanup path report; uninstall cancelled")
+        for kind in ("directories", "files"):
+            plan[kind].extend(additions[kind])
+
+validated = {"directories": set(), "files": set()}
+for kind in validated:
+    for source in plan[kind]:
+        if not isinstance(source, str) or not os.path.isabs(source) or any(ord(char) < 32 for char in source):
+            sys.exit("Cleanup paths must be absolute and contain no control characters")
+        path = os.path.realpath(source)
+        if (path in protected or any(contains(path, item) for item in protected)
+                or (kind == "directories" and path != real_installation and contains(path, real_installation))
+                or (kind == "files" and os.path.isdir(path))):
+            sys.exit("Refusing to delete unsafe application data path: " + source)
+        validated[kind].update((os.path.normpath(source), path))
+
+# Delete application data first and the installation last, keeping configuration
+# and management commands available when data cleanup fails.
+installations = {installation, real_installation}
+data_directories = validated["directories"] - installations
+directories = sorted(path for path in data_directories
+                     if not any(path != parent and contains(parent, path) for parent in data_directories))
+files = sorted(path for path in validated["files"] if not any(contains(parent, path) for parent in directories))
+result = {"directories": directories + sorted(installations), "files": files}
+with open(plan_path + ".tmp", "w") as stream:
+    json.dump(result, stream)
+os.replace(plan_path + ".tmp", plan_path)
+PY
+}
+
+uninstall_app() (
   confirm_uninstall_app || return 1
 
-  listen_port="$(listen_port_from_config)"
-  for port in "$listen_port" "$FRONTEND_PORT" 9191 9192; do
-    [[ "$port" =~ ^[0-9]+$ ]] || continue
-    if append_unique "$port" "${ports[@]}" >/dev/null; then
-      ports+=("$port")
-    fi
+  command -v python3 >/dev/null 2>&1 || die "python3 is required to resolve cleanup paths"
+  if [[ -d "$INSTALL_PATH" ]]; then
+    local uninstall_lock
+    exec {uninstall_lock}< "$INSTALL_PATH"
+    flock -n "$uninstall_lock" || die "Another deployment operation is running; retry later"
+  fi
+  umask 077
+  local work_dir config_file="$INSTALL_PATH/config.yaml" storage_report="" path
+  local -a paths
+  work_dir=$(mktemp -d)
+  trap 'rm -rf -- "$work_dir"' EXIT
+  if [[ -f "$config_file" ]]; then
+    [[ -x "$INSTALL_PATH/server" ]] || die "Server binary is required to resolve configured data paths"
+    storage_report="$work_dir/storage.json"
+    (cd "$INSTALL_PATH" && ./server storage-paths --config "$config_file") > "$storage_report" ||
+      die "Could not resolve storage paths; check the configuration and server storage-paths support"
+  fi
+  validate_uninstall_paths "$work_dir/paths.json" "$storage_report"
+  remove_telegram "$work_dir/paths.json"
+
+  # Only this systemd service and the explicitly configured Bot API are owned.
+  systemctl disable --now "${SERVICE_NAME}.service" || die "could not stop and disable ${SERVICE_NAME}.service; installation has been kept"
+  python3 - "$work_dir/paths.json" > "$work_dir/paths" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as stream:
+    plan = json.load(stream)
+for path in plan["files"] + plan["directories"]:
+    sys.stdout.write(path + "\0")
+PY
+  mapfile -d '' -t paths < "$work_dir/paths"
+  for path in "${paths[@]}"; do
+    log "Deleting $path"
+    rm -rf --one-file-system -- "$path" || die "Data cleanup failed at $path; management commands kept for retry"
   done
-
-  stop_app_services
-  remove_app_containers
-  stop_lingering_app_processes "${ports[@]}"
+  rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+  systemctl daemon-reload
   rm -f "$COMMAND_LINK" "$APP_COMMAND_LINK" "$MANAGER_PATH"
+  log "Uninstall complete: 91 and its application data removed"
+)
 
-  if delete_install_path_requested; then
-    rm -rf "$INSTALL_PATH"
-    log "removed $INSTALL_PATH"
-  else
-    log "kept $INSTALL_PATH"
+require_local_docker() {
+  command -v docker >/dev/null 2>&1 || die "docker is required; install it before managing Telegram"
+  docker compose version >/dev/null 2>&1 || die "Docker Compose is unavailable; install the Compose plugin"
+  local operating_system endpoint="${DOCKER_HOST:-}"
+  operating_system=$(docker info --format '{{.OperatingSystem}}') || die "Cannot connect to Docker; check that the Engine is running"
+  if [[ -n "${DOCKER_CONTEXT:-}" || -z "$endpoint" ]]; then
+    endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}') || die "Cannot read the Docker context"
+  fi
+  [[ "$(uname -s)" == Linux && "$endpoint" == unix://* && "${operating_system,,}" != *"docker desktop"* ]] ||
+    die "Telegram for native 91 requires a local Linux Docker Engine"
+}
+
+remove_telegram() (
+  local compose_file="$INSTALL_PATH/telegram.yml"
+  local cleanup_plan="$1"
+  [[ -e "$compose_file" || -L "$compose_file" ]] || return 0
+  [[ -f "$compose_file" && ! -L "$compose_file" ]] || die "telegram.yml must be a regular file, not a symlink"
+
+  # An untouched template must not make Docker a requirement for uninstall.
+  if [[ -f "$INSTALL_PATH/telegram.example.yml" ]] && cmp -s -- "$compose_file" "$INSTALL_PATH/telegram.example.yml" &&
+    { ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; }; then
+    log "Telegram template is unconfigured; skipping Bot API cleanup"
+    return 0
+  fi
+  require_local_docker
+  command -v python3 >/dev/null 2>&1 || die "python3 is required to read the Telegram deployment; installation kept"
+  umask 077
+  local work_dir project network network_id attached image consumers volume
+  local -a options containers networks images volumes
+  work_dir=$(mktemp -d "$INSTALL_PATH/.telegram-uninstall.XXXXXX")
+  trap 'rm -rf -- "$work_dir"' EXIT
+  options=(--project-directory "$INSTALL_PATH" -f "$compose_file")
+  docker compose "${options[@]}" config --format json > "$work_dir/deployment.json"
+  # Resolve the project once; later reads must not follow concurrent file edits.
+  options=(--project-directory "$INSTALL_PATH" -f "$work_dir/deployment.json")
+  python3 - "$work_dir/deployment.json" "$work_dir/data-paths.json" "$work_dir/volumes.json" > "$work_dir/networks" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as stream:
+    document = json.load(stream)
+services = document.get("services", {})
+bot = services.get("telegram-bot-api")
+if not bot or "video-site-91" in services:
+    sys.exit("telegram.yml must define a native Bot API deployment; installation kept")
+root = "/var/lib/telegram-bot-api"
+paths = [mount["source"] for mount in bot.get("volumes", [])
+         if mount.get("type") == "bind" and
+         (mount.get("target") == root or mount.get("target", "").startswith(root + "/"))]
+with open(sys.argv[2], "w") as stream:
+    json.dump({"directories": paths, "files": []}, stream)
+definitions = document.get("volumes", {})
+external = {value["name"] for value in definitions.values() if value.get("external")}
+volumes = {definitions[mount["source"]]["name"] for mount in bot.get("volumes", [])
+           if mount.get("type") == "volume" and mount.get("source") in definitions}
+with open(sys.argv[3], "w") as stream:
+    json.dump({"candidates": sorted(volumes - external), "external": sorted(external)}, stream)
+sys.stdout.write(document["name"] + "\0")
+for name in bot.get("networks", {}):
+    if not document.get("networks", {}).get(name, {}).get("external", False):
+        sys.stdout.write(name + "\0")
+PY
+  validate_uninstall_paths "$cleanup_plan" "$work_dir/data-paths.json"
+  mapfile -d '' -t networks < "$work_dir/networks"
+  project="${networks[0]}"
+  docker compose "${options[@]}" ps -a -q telegram-bot-api > "$work_dir/containers"
+  mapfile -t containers < "$work_dir/containers"
+  images=()
+  if (( ${#containers[@]} )); then
+    docker inspect "${containers[@]}" > "$work_dir/containers.json"
+    python3 - "$work_dir/containers.json" "$INSTALL_PATH" "$compose_file" "$project" "$work_dir/actual-data-paths.json" "$work_dir/volumes.json" > "$work_dir/images" <<'PY'
+import json
+import os
+import sys
+
+with open(sys.argv[1]) as stream:
+    containers = json.load(stream)
+directory, filename = map(os.path.realpath, sys.argv[2:4])
+images = set()
+paths = set()
+with open(sys.argv[6]) as stream:
+    volumes = json.load(stream)
+volume_names = set(volumes["candidates"])
+for container in containers:
+    labels = container.get("Config", {}).get("Labels", {})
+    files = labels.get("com.docker.compose.project.config_files", "").split(",")
+    if (labels.get("com.docker.compose.project") != sys.argv[4]
+            or labels.get("com.docker.compose.service") != "telegram-bot-api"
+            or os.path.realpath(labels.get("com.docker.compose.project.working_dir", "")) != directory
+            or filename not in [os.path.realpath(path) for path in files if path]):
+        sys.exit("Bot API container belongs to another deployment; installation kept")
+    images.add(container["Image"])
+    for mount in container.get("Mounts", []):
+        target = mount.get("Destination", "")
+        if mount.get("Type") == "bind" and (target == "/var/lib/telegram-bot-api" or target.startswith("/var/lib/telegram-bot-api/")):
+            paths.add(mount["Source"])
+        if mount.get("Type") == "volume":
+            volume_names.add(mount["Name"])
+with open(sys.argv[5], "w") as stream:
+    json.dump({"directories": sorted(paths), "files": []}, stream)
+volumes["candidates"] = sorted(volume_names - set(volumes["external"]))
+with open(sys.argv[6], "w") as stream:
+    json.dump(volumes, stream)
+for image in sorted(images):
+    print(image)
+PY
+    validate_uninstall_paths "$cleanup_plan" "$work_dir/actual-data-paths.json"
+    mapfile -t images < "$work_dir/images"
   fi
 
-  warn_remaining_listeners "${ports[@]}"
+  log "Removing this installation's Telegram Bot API"
+  if (( ${#containers[@]} )); then
+    docker stop "${containers[@]}" || die "Bot API stop failed; installation kept for retry"
+    docker rm --volumes "${containers[@]}" || die "Bot API removal failed; installation kept for retry"
+  fi
+  docker volume ls --filter "label=com.docker.compose.project=$project" --quiet > "$work_dir/project-volumes"
+  python3 - "$work_dir/volumes.json" "$work_dir/project-volumes" > "$work_dir/owned-volumes" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as stream:
+    candidates = set(json.load(stream)["candidates"])
+with open(sys.argv[2]) as stream:
+    owned = set(stream.read().splitlines())
+for name in sorted(candidates & owned):
+    print(name)
+PY
+  mapfile -t volumes < "$work_dir/owned-volumes"
+  for volume in "${volumes[@]}"; do
+    consumers=$(docker ps -a --filter "volume=$volume" --quiet)
+    if [[ -n "$consumers" ]]; then
+      log "Keeping shared Bot API volume $volume"
+      continue
+    fi
+    docker volume rm "$volume" || die "Bot API volume removal failed; installation kept for retry"
+  done
+  for network in "${networks[@]:1}"; do
+    docker network ls --filter "label=com.docker.compose.project=$project" \
+      --filter "label=com.docker.compose.network=$network" --quiet > "$work_dir/network-ids"
+    while IFS= read -r network_id; do
+      [[ -n "$network_id" ]] || continue
+      attached=$(docker network inspect "$network_id" --format '{{len .Containers}}')
+      if [[ "$attached" != 0 ]]; then
+        log "Keeping shared Bot API network $network_id"
+        continue
+      fi
+      docker network rm "$network_id" || die "Bot API network removal failed; installation kept for retry"
+    done < "$work_dir/network-ids"
+  done
+  for image in "${images[@]}"; do
+    consumers=$(docker ps -a --filter "ancestor=$image" --quiet)
+    if [[ -n "$consumers" ]]; then
+      log "Keeping shared Bot API image $image"
+      continue
+    fi
+    docker image rm "$image" || warn "Could not remove Bot API image $image; keeping the image cache"
+  done
+)
+
+telegram_parameter() {
+  local name="$1" pattern="$2" value="$3"
+  while [[ ! "$value" =~ $pattern ]]; do
+    [[ -t 0 ]] || die "$name is missing or invalid; set it in the environment or run interactively"
+    read -r -p "$name (from my.telegram.org): " value || die "Telegram setup cancelled before deployment changes"
+  done
+  printf '%s' "$value"
 }
+
+setup_telegram() (
+  # Keep temporary credentials private and cleanup local to this action.
+  umask 077
+  [[ -x "$INSTALL_PATH/server" && -f "$INSTALL_PATH/config.yaml" ]] || die "Native installation is incomplete at $INSTALL_PATH; run install.sh"
+  local command work_dir source compose_file api_id api_hash backup
+  local -a credentials compose_options
+  for command in python3 flock; do
+    command -v "$command" >/dev/null 2>&1 || die "$command is required; install it before running 91 telegram"
+  done
+  require_local_docker
+
+  local telegram_lock
+  exec {telegram_lock}< "$INSTALL_PATH"
+  flock -n "$telegram_lock" || die "Another deployment operation is running; retry later"
+  compose_file="$INSTALL_PATH/telegram.yml"
+  source="$compose_file"
+  work_dir=$(mktemp -d "$INSTALL_PATH/.telegram-setup.XXXXXX")
+  trap 'rm -rf -- "$work_dir"' EXIT
+  if [[ -f "$compose_file" ]]; then
+    [[ ! -L "$compose_file" ]] || die "telegram.yml must be a regular file, not a symlink"
+    cp -p -- "$compose_file" "$work_dir/original.yml"
+    source="$work_dir/original.yml"
+  else
+    [[ ! -e "$compose_file" && ! -L "$compose_file" ]] || die "telegram.yml must be a regular file"
+    source="$INSTALL_PATH/telegram.example.yml"
+    [[ -f "$source" ]] || die "Missing $source; run 91 update"
+  fi
+  compose_options=(--project-directory "$INSTALL_PATH")
+  docker compose "${compose_options[@]}" -f "$source" config --format json > "$work_dir/current.json"
+  python3 - "$work_dir/current.json" > "$work_dir/credentials" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as stream:
+    document = json.load(stream)
+services = document.get("services", {})
+bot = services.get("telegram-bot-api")
+if not bot or "video-site-91" in services:
+    sys.exit("telegram.yml must define a native Bot API deployment; use 91-docker.sh for Docker deployments")
+if bot.get("network_mode") or bot.get("command") is not None or bot.get("entrypoint") is not None:
+    sys.exit("Bot API network_mode, command and entrypoint overrides are unsupported")
+root = "/var/lib/telegram-bot-api"
+mounts = [mount for mount in bot.get("volumes", []) if mount.get("target", "").rstrip("/") == root]
+if (len(mounts) != 1 or mounts[0].get("type") != "bind" or mounts[0].get("read_only")
+        or not mounts[0].get("source", "").startswith("/") or "$" in mounts[0].get("source", "")
+        or any(mount.get("target", "").startswith(root + "/") for mount in bot.get("volumes", []))):
+    sys.exit("Bot API needs one writable host directory at /var/lib/telegram-bot-api. Use an absolute path without variables or child mounts")
+environment = bot.get("environment", {})
+port = str(environment.get("TELEGRAM_HTTP_PORT", ""))
+if not port.isdigit() or not 1 <= int(port) <= 65535:
+    sys.exit("Set TELEGRAM_HTTP_PORT to an integer from 1 to 65535 in telegram.yml")
+ports = [mapping for mapping in bot.get("ports", [])
+         if str(mapping.get("target")) == port and mapping.get("protocol", "tcp") == "tcp"]
+if (len(ports) != 1 or not str(ports[0].get("published", "")).isdigit()
+        or not 1 <= int(ports[0]["published"]) <= 65535):
+    sys.exit("Bot API needs one valid TCP host port mapping for TELEGRAM_HTTP_PORT")
+for key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
+    value = environment.get(key) or ""
+    sys.stdout.write(str(value) + "\0")
+PY
+  mapfile -d '' -t credentials < "$work_dir/credentials"
+  api_id=$(telegram_parameter TELEGRAM_API_ID '^[1-9][0-9]*$' "${TELEGRAM_API_ID:-${credentials[0]}}")
+  api_hash=$(telegram_parameter TELEGRAM_API_HASH '^[a-fA-F0-9]{32}$' "${TELEGRAM_API_HASH:-${credentials[1]}}")
+  # Pass credentials over stdin, never in process arguments or diagnostic logs.
+  printf '%s\000%s' "$api_id" "$api_hash" | python3 -c '
+import json, sys
+with open(sys.argv[1]) as stream:
+    document = json.load(stream)
+api_id, api_hash = sys.stdin.read().split("\0")
+environment = document["services"]["telegram-bot-api"].setdefault("environment", {})
+environment.update(TELEGRAM_API_ID=api_id, TELEGRAM_API_HASH=api_hash, TELEGRAM_LOCAL="1")
+with open(sys.argv[2], "w") as stream:
+    json.dump(document, stream)
+' "$work_dir/current.json" "$work_dir/proposed.json"
+  docker compose "${compose_options[@]}" -f "$work_dir/proposed.json" config > "$work_dir/candidate.yml"
+
+  if [[ -f "$work_dir/original.yml" ]]; then
+    cmp -s -- "$compose_file" "$work_dir/original.yml" || die "telegram.yml changed during setup; retry with the updated file"
+    if ! cmp -s -- "$compose_file" "$work_dir/candidate.yml"; then
+      backup=$(mktemp "$compose_file.bak-$(date -u +%Y%m%dT%H%M%S).XXXXXX")
+      cp -- "$compose_file" "$backup"
+      log "Configuration backup: $backup"
+    fi
+    mv -f -- "$work_dir/candidate.yml" "$compose_file"
+  else
+    ln -- "$work_dir/candidate.yml" "$compose_file" || die "telegram.yml was created by another process; retry"
+  fi
+  log "Starting Telegram Bot API"
+  docker compose "${compose_options[@]}" -f "$compose_file" up -d --no-deps --no-build --pull missing \
+    --wait --wait-timeout "$SERVICE_READY_TIMEOUT" telegram-bot-api ||
+    die "Bot API failed to start; config kept at $compose_file. Native 91 was not restarted"
+  restart_service_ready || die "Bot API started, but native 91 failed its readiness check. See '91 status' and '91 logs'"
+  log "Bot API is running. Set Bot Token and allowed user IDs in the admin panel, then enable Telegram and test the connection"
+)
 
 reset_password() {
   if [[ ! -x "$INSTALL_PATH/server" ]]; then
-    die "服务端程序不存在或不可执行: $INSTALL_PATH/server"
+    die "Server binary is missing or not executable: $INSTALL_PATH/server"
   fi
   local install_dir
   install_dir="$(cd "$INSTALL_PATH" && pwd)"
@@ -827,40 +1094,48 @@ show_menu() {
     return 0
   fi
 
+  local choice action
   while true; do
-    clear
-    echo "欢迎使用 91 管理脚本"
+    clear || true
+    echo "91 native deployment (systemd)"
     echo
-    echo "基础功能："
-    echo "1、查看状态"
-    echo "2、查看日志"
-    echo "3、更新 91"
-    echo "4、重启 91"
-    echo "5、停止 91"
-    echo "6、重置用户密码（随机生成）"
-    echo "7、卸载 91"
-    echo "0、退出"
+    echo "1) Service status"
+    echo "2) Service logs"
+    echo "3) Start 91"
+    echo "4) Restart 91"
+    echo "5) Stop 91"
+    echo "6) Update 91"
+    echo "7) Reset user password"
+    echo "8) Uninstall 91 and related services"
+    echo "9) Set up Telegram Bot API"
+    echo "0) Exit"
     echo
-    read -r -p "请输入选项 [0-7]: " choice
+    read -r -p "Select an option [0-9]: " choice || return 0
 
     case "$choice" in
-      1) main status ;;
-      2) main logs ;;
-      3) main update ;;
-      4) main restart ;;
-      5) main stop ;;
-      6) main reset-password ;;
-      7)
-        if main uninstall; then
-          exit 0
-        fi
-        ;;
-      0) exit 0 ;;
-      *) echo "无效的选项" ;;
+      1) action=status ;;
+      2) action=logs ;;
+      3) action=start ;;
+      4) action=restart ;;
+      5) action=stop ;;
+      6) action=update ;;
+      7) action=reset-password ;;
+      8) action=uninstall ;;
+      9) action=telegram ;;
+      0) return 0 ;;
+      *) echo "Invalid option. Enter 0-9."; continue ;;
     esac
 
+    # A separate shell keeps action failures from exiting the menu, while each
+    # action retains errexit instead of inheriting an `if main ...` context.
+    if bash "${BASH_SOURCE[0]}" "$action"; then
+      [[ "$action" != uninstall ]] || return 0
+    else
+      warn "Command '$action' exited with code $?. See output above."
+    fi
+
     echo
-    read -r -n1 -s -p "按任意键继续 ..."
+    read -r -n1 -s -p "Press any key to continue..." || return 0
   done
 }
 
@@ -872,49 +1147,73 @@ main() {
       return
     fi
     action="install"
+  else
+    shift
+  fi
+
+  case "$action" in
+    install|start|stop|restart|status|logs|update|telegram|uninstall|reset-password|-h|--help|help) ;;
+    *)
+      warn "unknown command: $action"
+      usage >&2
+      return 2
+      ;;
+  esac
+  if (( $# == 1 )) && [[ "$1" == -h || "$1" == --help ]]; then
+    usage "$action"
+    return 0
+  fi
+  if [[ "$action" != reset-password ]] && (( $# )); then
+    warn "unexpected arguments for $action: $*"
+    usage "$action" >&2
+    return 2
   fi
 
   case "$action" in
     install)
-      need_root "$@"
+      need_root "$action" "$@"
       install_app
       ;;
     update)
-      need_root "$@"
+      need_root "$action" "$@"
       update_app
       ;;
+    start)
+      need_root "$action" "$@"
+      systemctl start "${SERVICE_NAME}.service"
+      if ! wait_for_service_ready; then
+        report_service_readiness_failure
+        die "service readiness check failed; see diagnostics above"
+      fi
+      ;;
     restart)
-      need_root "$@"
+      need_root "$action" "$@"
       restart_service_ready || die "service readiness check failed; see diagnostics above"
       ;;
     stop)
-      need_root "$@"
+      need_root "$action" "$@"
       systemctl stop "${SERVICE_NAME}.service"
       ;;
     status)
-      systemctl --no-pager --full status "${SERVICE_NAME}.service" || true
+      systemctl --no-pager --full status "${SERVICE_NAME}.service"
       ;;
     logs)
       journalctl -u "${SERVICE_NAME}.service" -f
       ;;
     reset-password)
-      need_root "$@"
-      shift
+      need_root "$action" "$@"
       reset_password "$@"
       ;;
-    menu)
-      show_menu
+    telegram)
+      need_root "$action" "$@"
+      setup_telegram
       ;;
     uninstall)
-      need_root "$@"
+      need_root "$action" "$@"
       uninstall_app
       ;;
     -h|--help|help)
       usage
-      ;;
-    *)
-      usage >&2
-      exit 2
       ;;
   esac
 }
