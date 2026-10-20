@@ -9,6 +9,57 @@ import (
 	"testing"
 )
 
+func TestQRCodeRequestsUseBrowserUserAgent(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		path     string
+		response string
+		request  func(*QRClient) error
+	}{
+		{
+			name:     "generate",
+			path:     "/QRCode/generate",
+			response: `{"meta":{"code":"200","message":"请求成功"},"result":{"uuid":"uuid-1","image":"iVBORw0KGgo="}}`,
+			request: func(client *QRClient) error {
+				_, err := client.Generate(context.Background())
+				return err
+			},
+		},
+		{
+			name:     "poll",
+			path:     "/QRCode/query",
+			response: `{"meta":{"code":"200","message":"请求成功"},"result":{"state":1}}`,
+			request: func(client *QRClient) error {
+				_, err := client.Poll(context.Background(), "uuid-1")
+				return err
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tt.path {
+					http.NotFound(w, r)
+					return
+				}
+				// WoPan's edge rejects the default Go/resty identity before the
+				// request reaches the QR-code service.
+				if !strings.HasPrefix(r.UserAgent(), "Mozilla/5.0 ") {
+					http.Error(w, "request blocked", http.StatusForbidden)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			t.Cleanup(upstream.Close)
+
+			client := NewQRClient(QRConfig{APIBaseURL: upstream.URL + "/QRCode"})
+			if err := tt.request(client); err != nil {
+				t.Fatalf("QR request rejected by browser User-Agent check: %v", err)
+			}
+		})
+	}
+}
+
 func TestQRCodeGenerateUsesServiceImage(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

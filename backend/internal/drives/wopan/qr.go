@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	sdk "github.com/OpenListTeam/wopan-sdk-go"
 	"github.com/go-resty/resty/v2"
 )
 
@@ -62,6 +63,7 @@ func NewQRClient(c QRConfig) *QRClient {
 		apiBase: apiBase,
 		client: resty.NewWithClient(httpClient).
 			SetTimeout(20*time.Second).
+			SetHeader("User-Agent", sdk.DefaultUA).
 			SetHeader("Accept", "application/json"),
 		now: now,
 	}

@@ -1,12 +1,95 @@
 package wopan
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"slices"
+	"strings"
 	"testing"
 
 	sdk "github.com/OpenListTeam/wopan-sdk-go"
 	"github.com/video-site/backend/internal/drives"
 )
+
+type sdkRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f sdkRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestSDKRequestsUseBrowserUserAgent(t *testing.T) {
+	responses := map[string]string{
+		sdk.KeyAppQueryUser:     `{"userId":"test-user"}`,
+		sdk.KeyClassifyRule:     `{"fileTypes":{}}`,
+		sdk.KeyGetZoneInfo:      `{"url":"https://upload.example.invalid"}`,
+		sdk.KeyQueryAllFiles:    `{"files":[{"id":"file-id","fid":"file-fid","name":"clip.mp4","type":1,"size":123}]}`,
+		sdk.KeyGetDownloadUrlV2: `{"list":[{"fid":"file-fid","downloadUrl":"https://download.example.invalid/clip.mp4"}]}`,
+	}
+	var calls []string
+	// The SDK fixes its API host. Intercept HTTPS at the default transport so
+	// this exercises the driver's complete Init path without real requests.
+	previousTransport := http.DefaultTransport
+	transport := previousTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = false
+	transport.RegisterProtocol("https", sdkRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		defer r.Body.Close()
+		if !strings.HasPrefix(r.UserAgent(), "Mozilla/5.0 ") {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Status:     "403 Forbidden",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("request blocked")),
+				Request:    r,
+			}, nil
+		}
+		var request struct {
+			Header struct {
+				Key string `json:"key"`
+			} `json:"header"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			return nil, err
+		}
+		data, ok := responses[request.Header.Key]
+		if !ok {
+			return nil, fmt.Errorf("unexpected SDK request %q", request.Header.Key)
+		}
+		calls = append(calls, request.Header.Key)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"STATUS":"200","RSP":{"RSP_CODE":"0000","DATA":` + data + `}}`)),
+			Request:    r,
+		}, nil
+	}))
+	http.DefaultTransport = transport
+	t.Cleanup(func() {
+		http.DefaultTransport = previousTransport
+		transport.CloseIdleConnections()
+	})
+
+	driver := New(Config{ID: "wopan-test", AccessToken: "0123456789abcdef"})
+	ctx := context.Background()
+	if err := driver.Init(ctx); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	entries, err := driver.List(ctx, "0")
+	if err != nil || len(entries) != 1 || entries[0].ID != "file-fid" {
+		t.Fatalf("List() = %+v, error = %v", entries, err)
+	}
+	link, err := driver.StreamURL(ctx, entries[0].ID)
+	if err != nil || link.URL != "https://download.example.invalid/clip.mp4" {
+		t.Fatalf("StreamURL() = %+v, error = %v", link, err)
+	}
+	wantCalls := []string{sdk.KeyAppQueryUser, sdk.KeyClassifyRule, sdk.KeyGetZoneInfo, sdk.KeyQueryAllFiles, sdk.KeyGetDownloadUrlV2}
+	if !slices.Equal(calls, wantCalls) {
+		t.Fatalf("SDK requests = %v, want %v", calls, wantCalls)
+	}
+}
 
 func TestFileToEntryUsesDirectoryIDAndFileFID(t *testing.T) {
 	dir := fileToEntry(&sdk.File{

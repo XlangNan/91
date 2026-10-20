@@ -86,6 +86,8 @@ func (d *Driver) Init(ctx context.Context) error {
 		sdk.WithClient(scopedproxy.NewHTTPClient(0)),
 		sdk.WithRefreshToken(d.refreshToken),
 	)
+	// WithUA configures uploads; dispatcher requests need the HTTP header too.
+	d.client.SetUserAgent(sdk.DefaultUA)
 	d.client.SetAccessToken(d.accessToken)
 	d.client.OnRefreshToken(func(access, refresh string) {
 		d.accessToken = access
