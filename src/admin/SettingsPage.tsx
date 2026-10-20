@@ -398,7 +398,7 @@ export function SettingsPage() {
       setPendingSave(null);
       show(
         response.restartRequired
-          ? "配置已保存；部分字段需重启服务后生效"
+          ? "配置已保存，部分字段需重启服务后生效"
           : "配置已保存并生效",
         response.restartRequired ? "info" : "success"
       );
