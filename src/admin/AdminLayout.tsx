@@ -235,6 +235,7 @@ function AdminLayoutContent() {
     const targetScrollTop = resolveAdminScrollTarget({
       previousRoute,
       nextPathname: location.pathname,
+      nextSearch: location.search,
       storedScrollTop: scrollPositionsRef.current.get(routeKey),
       currentScrollTop,
     });
@@ -242,6 +243,7 @@ function AdminLayoutContent() {
     activeScrollRouteRef.current = {
       key: routeKey,
       pathname: location.pathname,
+      search: location.search,
     };
     scrollPositionsRef.current.set(routeKey, targetScrollTop);
 
@@ -311,7 +313,7 @@ function AdminLayoutContent() {
     }
 
     return stopRetrying;
-  }, [location.key, location.pathname]);
+  }, [location.key, location.pathname, location.search]);
 
   useEffect(() => {
     setMobileNavigationOpen(false);

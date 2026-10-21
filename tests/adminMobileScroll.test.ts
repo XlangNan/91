@@ -149,8 +149,10 @@ test("admin route navigation resets new pages and restores history positions", (
   assert.match(adminLayoutSource, /main\?\.addEventListener\("scroll", saveMainScrollPosition/);
   assert.match(adminLayoutSource, /scrollPositionsRef\.current\.set\(activeRoute\.key, scrollTop\)/);
   assert.match(adminLayoutSource, /activeScrollRouteRef\.current = \{/);
+  assert.match(adminLayoutSource, /nextSearch: location\.search/);
+  assert.match(adminLayoutSource, /search: location\.search/);
   assert.match(adminLayoutSource, /mediaQuery\.addEventListener\("change", handleScrollOwnerChange\)/);
-  assert.match(adminLayoutSource, /\}, \[location\.key, location\.pathname\]\);/);
+  assert.match(adminLayoutSource, /\}, \[location\.key, location\.pathname, location\.search\]\);/);
   assert.match(adminLayoutSource, /new ResizeObserver\(scheduleRestore\)/);
   assert.match(adminLayoutSource, /new MutationObserver\(scheduleRestore\)/);
   assert.match(adminLayoutSource, /ref=\{pageContentRef\}/);
@@ -159,12 +161,13 @@ test("admin route navigation resets new pages and restores history positions", (
 });
 
 test("admin scroll target distinguishes history, same-route state, and new routes", () => {
-  const previousRoute = { key: "list", pathname: "/admin/videos" };
+  const previousRoute = { key: "list", pathname: "/admin/videos", search: "?page=1" };
 
   assert.equal(
     resolveAdminScrollTarget({
       previousRoute,
       nextPathname: "/admin/videos",
+      nextSearch: "?page=2",
       storedScrollTop: 180,
       currentScrollTop: 640,
     }),
@@ -174,6 +177,7 @@ test("admin scroll target distinguishes history, same-route state, and new route
     resolveAdminScrollTarget({
       previousRoute,
       nextPathname: "/admin/videos",
+      nextSearch: "?page=2",
       storedScrollTop: 0,
       currentScrollTop: 640,
     }),
@@ -183,6 +187,7 @@ test("admin scroll target distinguishes history, same-route state, and new route
     resolveAdminScrollTarget({
       previousRoute,
       nextPathname: "/admin/videos",
+      nextSearch: "?page=2",
       storedScrollTop: undefined,
       currentScrollTop: 640,
     }),
@@ -192,6 +197,89 @@ test("admin scroll target distinguishes history, same-route state, and new route
     resolveAdminScrollTarget({
       previousRoute,
       nextPathname: "/admin/users",
+      nextSearch: "",
+      storedScrollTop: undefined,
+      currentScrollTop: 640,
+    }),
+    0
+  );
+});
+
+test("new drive pages start at the top instead of inheriting another page's position", () => {
+  const transitions = [
+    { from: "", to: "?drive=first" },
+    { from: "?drive=first", to: "?drive=second" },
+    { from: "?drive=first", to: "" },
+    { from: "?drive=", to: "?drive=first" },
+  ];
+
+  for (const pathname of ["/admin/drives", "/admin/drives/"]) {
+    for (const { from, to } of transitions) {
+      assert.equal(
+        resolveAdminScrollTarget({
+          previousRoute: { key: "previous", pathname, search: from },
+          nextPathname: pathname,
+          nextSearch: to,
+          storedScrollTop: undefined,
+          currentScrollTop: 640,
+        }),
+        0,
+        `${pathname}${from} -> ${pathname}${to}`
+      );
+    }
+  }
+});
+
+test("drive filters preserve the position within the same list or detail page", () => {
+  const transitions = [
+    { from: "", to: "?filter=active" },
+    { from: "?drive=", to: "?filter=active" },
+    { from: "?drive=first", to: "?filter=active&drive=first" },
+    { from: "?drive=first%20drive", to: "?drive=first+drive&filter=active" },
+  ];
+
+  for (const { from, to } of transitions) {
+    assert.equal(
+      resolveAdminScrollTarget({
+        previousRoute: { key: "previous", pathname: "/admin/drives", search: from },
+        nextPathname: "/admin/drives",
+        nextSearch: to,
+        storedScrollTop: undefined,
+        currentScrollTop: 640,
+      }),
+      640,
+      `${from} -> ${to}`
+    );
+  }
+});
+
+test("drive history restores each list and detail entry's own position", () => {
+  for (const [from, to] of [
+    ["?drive=first", ""],
+    ["", "?drive=first"],
+    ["?drive=first", "?drive=second"],
+  ]) {
+    for (const storedScrollTop of [0, 180]) {
+      assert.equal(
+        resolveAdminScrollTarget({
+          previousRoute: { key: "previous", pathname: "/admin/drives", search: from },
+          nextPathname: "/admin/drives",
+          nextSearch: to,
+          storedScrollTop,
+          currentScrollTop: 640,
+        }),
+        storedScrollTop
+      );
+    }
+  }
+});
+
+test("direct entry to a drive detail starts at the top", () => {
+  assert.equal(
+    resolveAdminScrollTarget({
+      previousRoute: null,
+      nextPathname: "/admin/drives",
+      nextSearch: "?drive=first",
       storedScrollTop: undefined,
       currentScrollTop: 640,
     }),
