@@ -52,9 +52,16 @@ type Generator struct {
 	// Captured once per asset so configuration changes never mix encoders
 	// between the segments of an in-flight preview.
 	hardware *hardwareBackend
+
+	segmentBudget time.Duration
+	finishTimeout time.Duration
 }
 
-const teaserSegmentTimeout = 90 * time.Second
+const (
+	defaultTeaserSegmentBudget = 4 * time.Minute
+	teaserSegmentTimeout       = 90 * time.Second
+	defaultTeaserFinishTimeout = 30 * time.Second
+)
 
 type ThumbnailGenerator interface {
 	Probe(ctx context.Context, link *drives.StreamLink) (float64, error)
@@ -90,7 +97,11 @@ func New(cfg Config) *Generator {
 	if cfg.Segments <= 0 {
 		cfg.Segments = 3
 	}
-	return &Generator{cfg: cfg}
+	return &Generator{
+		cfg:           cfg,
+		segmentBudget: defaultTeaserSegmentBudget,
+		finishTimeout: defaultTeaserFinishTimeout,
+	}
 }
 
 // --- 选段策略 ---
@@ -601,8 +612,8 @@ func (g *Generator) generateSerialWithRefresh(
 		return "", fmt.Errorf("video too short for %.0fs teaser segment", eachSec)
 	}
 
-	ctx2, cancel := context.WithTimeout(ctx, 4*time.Minute)
-	defer cancel()
+	segmentCtx, cancelSegments := context.WithTimeout(ctx, g.segmentBudget)
+	defer cancelSegments()
 
 	generatedPaths := make([]string, 0, len(starts))
 	success := false
@@ -624,7 +635,14 @@ func (g *Generator) generateSerialWithRefresh(
 	var colorRepair sourceColorRepair
 	nextCandidate := 0
 	var lastErr error
+segmentLoop:
 	for nextCandidate < len(candidates) && len(segmentResults) < targetSegments {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if segmentCtx.Err() != nil {
+			break
+		}
 		candidate := teaserSegmentCandidate{
 			index: nextCandidate,
 			start: candidates[nextCandidate],
@@ -633,7 +651,7 @@ func (g *Generator) generateSerialWithRefresh(
 
 		result := teaserSegmentResult{teaserSegmentCandidate: candidate}
 		result.path, result.err = g.generateSingleSegment(
-			ctx2,
+			segmentCtx,
 			candidate.index,
 			candidate.start,
 			eachSec,
@@ -641,11 +659,14 @@ func (g *Generator) generateSerialWithRefresh(
 			currentLink,
 			&colorRepair,
 		)
+		if err := ctx.Err(); err != nil && result.err != nil {
+			return "", err
+		}
 		if g.hardware != nil && hardwareFailure(result.err) {
 			return "", result.err
 		}
-		if refreshAfterFailure != nil && directMediaLinkRefreshAllowed(result.err) {
-			refreshed, refreshErr := refreshAfterFailure(ctx2)
+		if segmentCtx.Err() == nil && refreshAfterFailure != nil && directMediaLinkRefreshAllowed(result.err) {
+			refreshed, refreshErr := refreshAfterFailure(segmentCtx)
 			if refreshErr == nil && (refreshed == nil || strings.TrimSpace(refreshed.URL) == "") {
 				refreshErr = fmt.Errorf("%w: empty refreshed direct link", drives.ErrGenerationStreamUnavailable)
 			}
@@ -653,7 +674,7 @@ func (g *Generator) generateSerialWithRefresh(
 			case refreshErr == nil:
 				currentLink = refreshed
 				result.path, result.err = g.generateSingleSegment(
-					ctx2,
+					segmentCtx,
 					candidate.index,
 					candidate.start,
 					eachSec,
@@ -662,6 +683,10 @@ func (g *Generator) generateSerialWithRefresh(
 					&colorRepair,
 				)
 			case !errors.Is(refreshErr, drives.ErrGenerationStreamUnavailable):
+				if segmentCtx.Err() != nil && errors.Is(refreshErr, segmentCtx.Err()) {
+					lastErr = refreshErr
+					break segmentLoop
+				}
 				return "", refreshErr
 			}
 		}
@@ -679,6 +704,15 @@ func (g *Generator) generateSerialWithRefresh(
 		generatedPaths = append(generatedPaths, result.path)
 		segmentResults = append(segmentResults, result)
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := segmentCtx.Err(); err != nil && len(segmentResults) < targetSegments {
+		lastErr = fmt.Errorf("teaser segment budget exhausted: %w", err)
+		applog.Warn(ctx, fmt.Sprintf("[preview] teaser segment budget exhausted segments=%d/%d duration=%.1fs",
+			len(segmentResults), targetSegments, duration), lastErr, applog.Fields{Component: "preview", Stage: "segments"})
+	}
+	cancelSegments()
 	if len(segmentResults) < requiredSegments {
 		degradedRequired := requiredTeaserSegments(duration, targetSegments, true)
 		if lastErr == nil || len(segmentResults) < degradedRequired {
@@ -687,8 +721,8 @@ func (g *Generator) generateSerialWithRefresh(
 			}
 			return "", fmt.Errorf("only generated %d/%d teaser segments", len(segmentResults), targetSegments)
 		}
-		log.Printf("[preview] degraded teaser accepted segments=%d/%d duration=%.1fs: %v",
-			len(segmentResults), targetSegments, duration, lastErr)
+		applog.Warn(ctx, fmt.Sprintf("[preview] degraded teaser accepted segments=%d/%d duration=%.1fs",
+			len(segmentResults), targetSegments, duration), lastErr, applog.Fields{Component: "preview", Stage: "segments"})
 	}
 
 	// Fallback candidates are attempted after the primary plan and are not
@@ -709,6 +743,12 @@ func (g *Generator) generateSerialWithRefresh(
 		success = true
 		return segmentPaths[0], nil
 	}
+
+	// Finishing uses only local files and gets its own budget. Derive it from
+	// the task context so exhausted remote reads do not cancel usable segments,
+	// while stopping the task still cancels both stages.
+	finishCtx, cancelFinish := context.WithTimeout(ctx, g.finishTimeout)
+	defer cancelFinish()
 
 	tmp, err := os.CreateTemp(g.cfg.LocalDir, "teaser-*.mp4")
 	if err != nil {
@@ -746,16 +786,19 @@ func (g *Generator) generateSerialWithRefresh(
 		"-movflags", "+faststart",
 		"-y", tmpPath,
 	}
-	out, err := exec.CommandContext(ctx2, g.cfg.FFmpegPath, args...).CombinedOutput()
+	out, err := exec.CommandContext(finishCtx, g.cfg.FFmpegPath, args...).CombinedOutput()
 	if err != nil {
 		_ = os.Remove(tmpPath)
+		if finishCtx.Err() != nil {
+			err = finishCtx.Err()
+		}
 		return "", ffmpegCommandError("ffmpeg concat", err, out)
 	}
 	if info, statErr := os.Stat(tmpPath); statErr != nil || info.Size() == 0 {
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("ffmpeg concat produced empty file, stderr: %s", string(out))
 	}
-	if err := g.validateGeneratedTeaser(ctx2, tmpPath); err != nil {
+	if err := g.validateGeneratedTeaser(finishCtx, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", err
 	}
@@ -827,6 +870,9 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 	out, err := g.runMediaCommand(ctx, link, ffmpegLink, args, outputArgs, colorRepair)
 	if err != nil {
 		_ = os.Remove(segPath)
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return "", g.processingError(ffmpegCommandError("ffmpeg segment", err, out))
 	}
 	if info, statErr := os.Stat(segPath); statErr != nil || info.Size() == 0 {
@@ -949,6 +995,9 @@ func (g *Generator) validateGeneratedTeaser(ctx context.Context, path string) er
 	}
 	out, err := exec.CommandContext(ctx2, g.cfg.FFprobePath, args...).CombinedOutput()
 	if err != nil {
+		if ctx2.Err() != nil {
+			err = ctx2.Err()
+		}
 		return ffmpegCommandError("ffprobe teaser", err, out)
 	}
 
