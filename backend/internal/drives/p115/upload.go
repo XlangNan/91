@@ -290,7 +290,12 @@ func (d *Driver) p115UploadAppVersionFor(ctx context.Context) (string, error) {
 	version := p115UploadFallbackAppVersion
 	var result p115AppVersionResponse
 	requestCtx, cancel := context.WithTimeout(ctx, p115UploadControlTimeout)
-	resp, err := d.client.Client.R().SetContext(requestCtx).SetResult(&result).Get(sdk.ApiGetVersion)
+	// The version endpoint returns JSON with a text/html content type.
+	resp, err := d.client.Client.R().
+		SetContext(requestCtx).
+		SetResult(&result).
+		ForceContentType("application/json").
+		Get(sdk.ApiGetVersion)
 	cancel()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr

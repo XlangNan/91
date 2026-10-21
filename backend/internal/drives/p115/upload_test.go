@@ -1,10 +1,62 @@
 package p115
 
 import (
+	"context"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
+
+	sdk "github.com/SheltonZhu/115driver/pkg/driver"
 )
+
+func TestUploadAppVersionResponseHandling(t *testing.T) {
+	const versionBody = `{"state":true,"error":"","data":{"win":{"version_code":"36.0.1"}}}`
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		status      int
+		wantVersion string
+	}{
+		{"JSON", "application/json", versionBody, http.StatusOK, "36.0.1"},
+		{"JSON labeled as HTML", "text/html; charset=UTF-8", versionBody, http.StatusOK, "36.0.1"},
+		{"JSON labeled as plain text", "text/plain", versionBody, http.StatusOK, "36.0.1"},
+		{"JSON without content type", "", versionBody, http.StatusOK, "36.0.1"},
+		{"HTML error page", "text/html", "<html>unavailable</html>", http.StatusOK, p115UploadFallbackAppVersion},
+		{"missing version", "text/html", `{"state":true,"data":{}}`, http.StatusOK, p115UploadFallbackAppVersion},
+		{"HTTP error", "text/html", versionBody, http.StatusServiceUnavailable, p115UploadFallbackAppVersion},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			d := New(Config{ID: "115"})
+			d.client = sdk.New(sdk.WithClient(&http.Client{Transport: p115RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodGet || r.URL.String() != sdk.ApiGetVersion {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
+				}
+				return &http.Response{
+					StatusCode: tt.status,
+					Header:     http.Header{"Content-Type": {tt.contentType}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})}))
+
+			for i := 0; i < 2; i++ {
+				version, err := d.p115UploadAppVersionFor(context.Background())
+				if err != nil || version != tt.wantVersion {
+					t.Fatalf("version = %q, error = %v, want %q without error", version, err, tt.wantVersion)
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("version requests = %d, want one cached lookup", calls)
+			}
+		})
+	}
+}
 
 func TestParseP115UploadCallbackReturnsExactFileID(t *testing.T) {
 	body := []byte(`{"state":true,"data":{"file_id":"file-exact","sha1":"abcdef"}}`)
