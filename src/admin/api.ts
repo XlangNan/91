@@ -551,6 +551,8 @@ export type AdminDrive = {
    * 替代旧版硬编码 p115 "影视" 目录例外分支。
    */
   skipDirIds: string[];
+  /** Changes after the mounted runtime configuration has been applied. */
+  directoryRevision: number;
   // localstorage 的 .strm 是否允许指向存储根目录之外；未配置时后端按 false 返回。
   strmAllowOutsideRoot?: boolean;
   scanGenerationStatus?: DriveGenerationStatus;

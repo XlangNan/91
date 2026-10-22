@@ -129,6 +129,48 @@ func TestDriveStorageFailureDoesNotBlockRuntimeSnapshot(t *testing.T) {
 	getDriveSnapshotForTest(t, router, "a/runtime")
 }
 
+func TestDriveDirectoryRevisionChangesOnlyAfterRuntimeApplication(t *testing.T) {
+	server, router := newDriveSnapshotServer(t)
+	read := func(id string) (driveview.Snapshot, driveConfigDTO) {
+		t.Helper()
+		snapshot := getDriveSnapshotForTest(t, router, id)
+		var config driveConfigDTO
+		if err := json.Unmarshal(snapshot.Data, &config); err != nil {
+			t.Fatal(err)
+		}
+		return snapshot, config
+	}
+	_, initial := read("a")
+	_, other := read("b")
+	drive, err := server.Catalog.GetDrive(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drive.Credentials["cookie"] = "replacement-cookie"
+	if err := server.Catalog.UpsertDrive(context.Background(), drive); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Catalog.SetDriveSkipDirIDs(context.Background(), "a", []string{"hidden"}); err != nil {
+		t.Fatal(err)
+	}
+	pendingSnapshot, pending := read("a")
+	if pending.DirectoryRevision != initial.DirectoryRevision {
+		t.Fatal("persisting desired credentials or skip directories invalidated directory reads")
+	}
+	server.Catalog.DriveEvents().Notify("a", true, driveevents.DriveRuntimeChanged)
+	activeSnapshot, active := read("a")
+	if active.DirectoryRevision <= pending.DirectoryRevision || activeSnapshot.Revision <= pendingSnapshot.Revision {
+		t.Fatal("completed runtime transition did not invalidate the cached config snapshot")
+	}
+	if len(active.SkipDirIDs) != 1 || active.SkipDirIDs[0] != "hidden" {
+		t.Fatal("directory invalidation changed skip-directory selections")
+	}
+	_, unchanged := read("b")
+	if unchanged.DirectoryRevision != other.DirectoryRevision {
+		t.Fatal("runtime transition invalidated another drive's directories")
+	}
+}
+
 func TestDriveSnapshotRoutesRequireAdministratorAndMissingDrivesReturn404(t *testing.T) {
 	_, router := newDriveSnapshotServer(t)
 	for _, suffix := range []string{"", "/runtime", "/stats", "/storage", "/events"} {

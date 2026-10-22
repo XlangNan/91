@@ -558,6 +558,7 @@ export function DrivesPage() {
             <SkipDirsPanel
               key={d.id}
               drive={d}
+              directoryVersion={detail.directoryVersion}
               onSaved={(saved) => {
                 detail.accept(saved.snapshot);
                 if (!saved.snapshot) void detail.refresh(["config"]);

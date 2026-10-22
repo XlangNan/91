@@ -12,7 +12,7 @@ function deferred<T>() {
 }
 const flush = async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); };
 const generation = (state = "idle", scannedCount = 0): api.DriveGenerationStatus => ({ state, scannedCount, queueLength: 0, addedCount: 0, doneCount: 0, totalCount: 0 });
-const config: api.DriveConfig = { id: "a", kind: "quark", name: "A", rootId: "0", status: "ok", hasCredential: true, canUpload: true, skipDirIds: [] };
+const config: api.DriveConfig = { id: "a", kind: "quark", name: "A", rootId: "0", status: "ok", hasCredential: true, canUpload: true, skipDirIds: [], directoryRevision: 0 };
 const data: api.DriveResourceData = {
   config,
   runtime: { scanGenerationStatus: generation() },

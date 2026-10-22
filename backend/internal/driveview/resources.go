@@ -15,7 +15,7 @@ const (
 var Resources = []Resource{Config, Runtime, Stats, Storage}
 
 var resourceEvents = map[Resource][]driveevents.Kind{
-	Config:  {driveevents.DriveChanged, driveevents.DriveMetadataChanged},
+	Config:  {driveevents.DriveChanged, driveevents.DriveMetadataChanged, driveevents.DriveRuntimeChanged},
 	Runtime: {driveevents.DriveChanged, driveevents.ScanResultChanged, driveevents.ActivityChanged},
 	Stats:   {driveevents.DriveChanged, driveevents.MediaChanged, driveevents.GenerationChanged},
 	Storage: {driveevents.DriveChanged, driveevents.MediaChanged, driveevents.AssetPathsChanged},

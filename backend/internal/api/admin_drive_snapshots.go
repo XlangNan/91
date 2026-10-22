@@ -47,7 +47,7 @@ func (a *AdminServer) loadDriveResource(ctx context.Context, id string, resource
 	}
 	switch resource {
 	case driveview.Config:
-		return driveConfig(drive), nil
+		return a.driveConfig(drive), nil
 	case driveview.Runtime:
 		generation := DriveGenerationStatuses{}
 		if a.GetDriveGenerationStatus != nil {

@@ -32,6 +32,9 @@ export function useDriveDetailData(driveId: string | null, routeActive: boolean)
     ? { ...config.data, ...emptyStats, ...stats.data, ...runtime.data } : null;
   return {
     ...state, drive, storage: storage.data,
+    // Event revisions restart with the server; include the config's epoch so
+    // retained directory caches cannot survive a process restart.
+    directoryVersion: `${config.epoch ?? ""}:${config.data?.directoryRevision ?? 0}`,
     loading: !state.notFound && !config.data && !config.error,
     refresh: (resources?: api.DriveResource[]) => controller.refresh(resources),
     accept: (snapshot?: api.DriveSnapshot) => { if (snapshot) controller.accept(snapshot); },

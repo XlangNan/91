@@ -3,7 +3,7 @@ import { RefreshRequest } from "../RefreshRequest";
 import { isGenerationBusy } from "./scanResults";
 
 const resources: api.DriveResource[] = ["config", "runtime", "stats", "storage"];
-export type ResourceState<T> = { data?: T; loading: boolean; error: string; revision: number; updatedAt?: string };
+export type ResourceState<T> = { data?: T; loading: boolean; error: string; revision: number; epoch?: string; updatedAt?: string };
 export type DriveDetailState = {
   resources: { [R in api.DriveResource]: ResourceState<api.DriveResourceData[R]> };
   connection: "paused" | "connecting" | "live" | "reconnecting";
@@ -141,7 +141,7 @@ export class DriveDetailData {
     }
     this.updateResource(resource, {
       ...(snapshot.data ? { data: snapshot.data } : {}), loading: false,
-      revision: snapshot.revision, updatedAt: snapshot.updatedAt, error: snapshot.error || "",
+      revision: snapshot.revision, epoch: snapshot.epoch, updatedAt: snapshot.updatedAt, error: snapshot.error || "",
     });
     if (finished) void this.read(["stats", "storage"]);
   }

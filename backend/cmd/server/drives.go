@@ -530,6 +530,7 @@ func (lease *driveConfigUpdateLease) Release() {
 		startApply := false
 		resumeAfterDrain := false
 		restoreAfterAbortedUpdate := false
+		runtimeChanged := false
 		lease.gate.mu.Lock()
 		switch {
 		case lease.destructive:
@@ -564,6 +565,7 @@ func (lease *driveConfigUpdateLease) Release() {
 		case lease.immediate:
 			lease.gate.applying = false
 			lease.gate.endBlockedLocked()
+			runtimeChanged = lease.committedScope&api.DriveConfigUpdateRuntime != 0
 		}
 		lease.gate.mu.Unlock()
 		if restoreAfterAbortedUpdate {
@@ -578,6 +580,9 @@ func (lease *driveConfigUpdateLease) Release() {
 			}
 			lease.gate.mu.Unlock()
 			lease.gate.controlMu.Unlock()
+		}
+		if runtimeChanged {
+			lease.app.notifyDriveRuntimeChanged(lease.driveID)
 		}
 		lease.gate.configMu.Unlock()
 		if startApply {
@@ -696,7 +701,18 @@ func (a *App) applyPendingDriveConfigLocked(driveID string, gate *driveOperation
 	gate.applyScheduled = false
 	gate.endBlockedLocked()
 	gate.mu.Unlock()
+	if scopes&api.DriveConfigUpdateRuntime != 0 {
+		a.notifyDriveRuntimeChanged(driveID)
+	}
 	log.Printf("[drive %s] deferred configuration is now active", driveID)
+}
+
+func (a *App) notifyDriveRuntimeChanged(driveID string) {
+	if a.cat != nil {
+		// Publish after reopening task admission. A directory reload triggered
+		// while the configuration gate is still blocked would immediately fail.
+		a.cat.DriveEvents().Notify(driveID, true, driveevents.DriveRuntimeChanged)
+	}
 }
 
 func safelyApplyDriveConfig(apply func() error) (err error) {

@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/video-site/backend/internal/catalog"
+	"github.com/video-site/backend/internal/driveevents"
 	drivepkg "github.com/video-site/backend/internal/drives"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
 	"github.com/video-site/backend/internal/driveview"
@@ -25,6 +26,7 @@ type driveConfigDTO struct {
 	HasCredential        bool     `json:"hasCredential"`
 	CanUpload            bool     `json:"canUpload"`
 	SkipDirIDs           []string `json:"skipDirIds"`
+	DirectoryRevision    uint64   `json:"directoryRevision"`
 	LastCrawlAt          int64    `json:"lastCrawlAt,omitempty"`
 	STRMAllowOutsideRoot *bool    `json:"strmAllowOutsideRoot,omitempty"`
 }
@@ -56,7 +58,7 @@ type driveDTO struct {
 	driveStatsDTO
 }
 
-func driveConfig(d *catalog.Drive) driveConfigDTO {
+func (a *AdminServer) driveConfig(d *catalog.Drive) driveConfigDTO {
 	hasCredential := false
 	for key := range d.Credentials {
 		if key != "last_crawl_at" {
@@ -70,6 +72,7 @@ func driveConfig(d *catalog.Drive) driveConfigDTO {
 		Status: d.Status, LastError: d.LastError, HasCredential: hasCredential,
 		CanUpload:  drivepkg.CapabilitiesForKind(d.Kind).Upload,
 		SkipDirIDs: append([]string{}, d.SkipDirIDs...), LastCrawlAt: lastCrawlAt,
+		DirectoryRevision:    a.Catalog.DriveEvents().Version(d.ID, driveevents.DriveRuntimeChanged),
 		STRMAllowOutsideRoot: strmAllowOutsideRootForDrive(d),
 	}
 }
@@ -130,7 +133,7 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		if saved, ok := scanResults[d.ID]; ok {
 			result = &saved
 		}
-		list = append(list, driveDTO{driveConfig(d), driveRuntime(generationStatuses[d.ID], result), driveStats(d.ID, assetStats)})
+		list = append(list, driveDTO{a.driveConfig(d), driveRuntime(generationStatuses[d.ID], result), driveStats(d.ID, assetStats)})
 	}
 	writeJSON(w, http.StatusOK, list)
 }

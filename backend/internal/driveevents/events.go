@@ -14,6 +14,9 @@ const (
 	GenerationChanged
 	AssetPathsChanged
 	ActivityChanged
+	// DriveRuntimeChanged is published after a runtime configuration transition
+	// finishes and directory reads can use the replacement driver.
+	DriveRuntimeChanged
 )
 
 type Change struct {
