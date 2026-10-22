@@ -306,6 +306,14 @@ func (c *Crawler) RunTask(ctx context.Context, t *Task, followUp func(context.Co
 	t.executed = true
 	ctx = applog.WithFields(ctx, applog.Fields{TaskID: t.Result.TaskID, DriveID: t.Result.DriveID, Component: "scriptcrawler"})
 	runCtx, cancel := context.WithTimeoutCause(ctx, c.cfg.RunTimeout, errCrawlTimeLimit)
+	// User stops must reach acquisition before CancelTask/StopTasks return.
+	// AfterFunc still handles cancellation inherited from the prepare context.
+	c.tasksMu.Lock()
+	c.tasks[t.Result.TaskID] = func() {
+		t.cancel()
+		cancel()
+	}
+	c.tasksMu.Unlock()
 	stopCancel := context.AfterFunc(t.context, cancel)
 	defer func() {
 		stopCancel()
@@ -337,8 +345,14 @@ func (c *Crawler) RunTask(ctx context.Context, t *Task, followUp func(context.Co
 		if runErr != nil {
 			var protocol *ProtocolError
 			var source *ScriptError
+			// Stopping acquisition can add context.Canceled while the parent is
+			// expiring. Preserve that deadline unless a caller actually canceled.
+			userCanceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(t.context.Err(), context.Canceled)
+			if !userCanceled && !errors.Is(runErr, context.DeadlineExceeded) {
+				userCanceled = errors.Is(runErr, context.Canceled)
+			}
 			switch {
-			case errors.Is(runErr, context.Canceled):
+			case userCanceled:
 				t.Result.State = "canceled"
 				t.Result.StopReason = "user_canceled"
 			case errors.Is(runErr, errOperationTimeout):
