@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createElement, type ReactElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import * as api from "../src/admin/api";
 import { useAdminResource } from "../src/admin/useAdminResource";
 import { TelegramStatusProvider, useTelegramStatus } from "../src/admin/telegram/TelegramStatusProvider";
@@ -18,25 +18,20 @@ function deferred<T>() {
 }
 
 function browser(t: TestContext) {
-  class TestDocument extends EventTarget { hidden = false; }
-  const document = new TestDocument();
-  const window = new EventTarget();
-  const originals = ["document", "window"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
-  Object.defineProperty(globalThis, "document", { configurable: true, value: document });
-  Object.defineProperty(globalThis, "window", { configurable: true, value: window });
-  let renderer: ReturnType<typeof create> | undefined;
+  const document = globalThis.document;
+  document.hidden = false;
+  const window = globalThis.window;
+  let renderer: ReturnType<typeof render> | undefined;
   t.after(async () => {
     if (renderer) await act(async () => renderer!.unmount());
-    for (const [key, original] of originals) {
-      if (original) Object.defineProperty(globalThis, key, original); else Reflect.deleteProperty(globalThis, key);
-    }
+    document.hidden = false;
   });
   return {
     document, window,
-    get root() { return renderer!.root; },
+    get root() { return renderer!.container; },
     render: async (element: ReactElement) => {
       await act(async () => {
-        if (renderer) renderer.update(element); else renderer = create(element);
+        if (renderer) renderer.rerender(element); else renderer = render(element);
       });
     },
     tick: async (milliseconds: number) => { await act(async () => t.mock.timers.tick(milliseconds)); },
@@ -80,15 +75,15 @@ test("storage summary keeps its shell and value slots when the drive list settle
     return createElement(StorageSummary, { storage: storage.data, loading: storage.loading });
   }
   await env.render(createElement(Probe));
-  const shell = env.root.findByType("section");
-  const values = () => env.root.findAllByType("strong").map((node) => node.children.join(""));
+  const shell = env.root.querySelector("section")!;
+  const values = () => Array.from(env.root.querySelectorAll("strong"), node => node.textContent);
   assert.equal(drives.loading, false);
   assert.equal(storage.loading, true);
-  assert.equal(shell.props["aria-busy"], true);
+  assert.equal(shell.getAttribute("aria-busy"), "true");
   assert.deepEqual(values(), Array(4).fill("\u00a0"));
   await act(async () => pendingStorage.reject(new Error("Storage unavailable")));
-  assert.equal(env.root.findByType("section"), shell);
-  assert.equal(shell.props["aria-busy"], undefined);
+  assert.equal(env.root.querySelector("section")!, shell);
+  assert.equal(shell.getAttribute("aria-busy"), null);
   assert.deepEqual(values(), Array(4).fill("\u00a0"));
 });
 
@@ -102,10 +97,10 @@ test("storage summary retains its values and shell during refresh and after a fa
     return createElement(StorageSummary, { storage: storage.data, loading: storage.loading });
   }
   await env.render(createElement(Probe));
-  const shell = env.root.findByType("section");
-  const values = () => env.root.findAllByType("strong").map((node) => node.children.join(""));
+  const shell = env.root.querySelector("section")!;
+  const values = () => Array.from(env.root.querySelectorAll("strong"), node => node.textContent);
   await act(async () => read.resolve({ thumbnailBytes: 1024, teaserBytes: 2048, totalBytes: 3072, availableBytes: 4096, capacityBytes: 8192, drives: {} }));
-  assert.equal(env.root.findByType("section"), shell);
+  assert.equal(env.root.querySelector("section")!, shell);
   assert.deepEqual(values(), ["1 KB", "2 KB", "3 KB", "4 KB"]);
   read = deferred<api.AdminDriveStorage>();
   await act(async () => { void storage.refresh(); });
@@ -113,7 +108,7 @@ test("storage summary retains its values and shell during refresh and after a fa
   assert.equal(storage.loading, false);
   assert.deepEqual(values(), ["1 KB", "2 KB", "3 KB", "4 KB"]);
   await act(async () => read.reject(new Error("Storage unavailable")));
-  assert.equal(env.root.findByType("section"), shell);
+  assert.equal(env.root.querySelector("section")!, shell);
   assert.equal(storage.error, "Storage unavailable");
   assert.deepEqual(values(), ["1 KB", "2 KB", "3 KB", "4 KB"]);
 });

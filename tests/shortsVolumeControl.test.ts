@@ -1,45 +1,39 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, fireEvent, render } from "./helpers/dom";
 import { ShortsVolumeControl } from "../src/shorts/ShortsVolumeControl";
 
 function setup(t: TestContext) {
   let muted = false;
   let keyboardFocus = false;
-  let renderer: ReturnType<typeof create>;
-  const wrapper = () => renderer.root.findByProps({ className: "shorts-volume-control" });
-  const trigger = {
-    matches: () => keyboardFocus,
-    focus() { wrapper().props.onFocus({ target: trigger }); },
-  };
-  const slider = { matches: () => true };
-  const container = { contains: (target: unknown) => target === trigger || target === slider };
-  const render = () => createElement(ShortsVolumeControl, {
+  const tree = () => createElement(ShortsVolumeControl, {
     muted,
     volume: 1,
-    onToggleMute() { muted = !muted; renderer.update(render()); },
+    onToggleMute() { muted = !muted; view.rerender(tree()); },
     onVolumeChange() {},
   });
-  act(() => {
-    renderer = create(render(), { createNodeMock: element => element.type === "button" ? trigger : null });
-  });
-  t.after(() => act(() => renderer.unmount()));
+  const view = render(tree());
+  const wrapper = view.container.querySelector<HTMLElement>(".shorts-volume-control")!;
+  const trigger = view.getByRole("button");
+  const slider = view.container.querySelector<HTMLInputElement>('input[type="range"]')!;
+  const matches = trigger.matches.bind(trigger);
+  t.mock.method(trigger, "matches", (selector: string) => selector === ":focus-visible" ? keyboardFocus : matches(selector));
+  const sliderMatches = slider.matches.bind(slider);
+  t.mock.method(slider, "matches", (selector: string) => selector === ":focus-visible" || sliderMatches(selector));
+  t.after(() => view.unmount());
   return {
-    get open() { return !renderer.root.findByProps({ className: "shorts-volume-control__panel" }).props.hidden; },
-    get label() { return renderer.root.findByType("button").props["aria-label"]; },
-    enter() { act(() => wrapper().props.onPointerEnter({ pointerType: "mouse" })); },
-    leave() { act(() => wrapper().props.onPointerLeave({ pointerType: "mouse" })); },
-    focus(keyboard: boolean) {
-      keyboardFocus = keyboard;
-      act(() => trigger.focus());
-    },
-    focusSlider() { act(() => wrapper().props.onFocus({ target: slider })); },
+    get open() { return !view.container.querySelector<HTMLElement>(".shorts-volume-control__panel")!.hidden; },
+    get label() { return trigger.getAttribute("aria-label"); },
+    enter() { fireEvent(wrapper, Object.assign(new Event("pointerover", { bubbles: true }), { pointerType: "mouse" })); },
+    leave() { fireEvent(wrapper, Object.assign(new Event("pointerout", { bubbles: true }), { pointerType: "mouse" })); },
+    focus(keyboard: boolean) { keyboardFocus = keyboard; act(() => trigger.focus()); },
+    focusSlider() { act(() => slider.focus()); },
     blur(inside = false) {
-      act(() => wrapper().props.onBlur({ currentTarget: container, relatedTarget: inside ? slider : null }));
+      act(() => inside ? slider.focus() : (document.activeElement as HTMLElement).blur());
     },
-    click() { act(() => renderer.root.findByType("button").props.onClick({ preventDefault() {} })); },
-    escape() { act(() => wrapper().props.onKeyDown({ key: "Escape", preventDefault() {}, stopPropagation() {} })); },
+    click() { fireEvent.click(trigger); },
+    escape() { fireEvent.keyDown(wrapper, { key: "Escape" }); },
   };
 }
 

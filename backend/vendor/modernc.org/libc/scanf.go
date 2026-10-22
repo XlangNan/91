@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build !(linux && (amd64 || arm64 || loong64))
+//go:build !(linux && (amd64 || arm64 || loong64 || ppc64le || s390x || riscv64 || 386 || arm))
 
 package libc // import "modernc.org/libc"
 
@@ -408,7 +408,33 @@ flags:
 		// is added).  The usual skip of leading white space is suppressed.  To skip
 		// white space first, use an explicit space in the format.
 		format++
-		panic(todo(""))
+		if width < 0 {
+			width = 1
+		}
+		var arg uintptr
+		if !discard {
+			arg = VaUintptr(args)
+		}
+		for ; width != 0; width-- {
+			c, err := r.ReadByte()
+			if err != nil {
+				if err != io.EOF {
+					nvalues = -1
+				}
+				return format, nvalues, match
+			}
+
+			match = true
+			nvalues = 1
+			if !discard {
+				*(*byte)(unsafe.Pointer(arg)) = c
+				arg++
+			}
+		}
+		if discard {
+			nvalues = 0
+		}
+		return format, nvalues, match
 	case '[':
 		// Matches  a nonempty sequence of characters from the specified set of
 		// accepted characters; the next pointer must be a pointer to char, and there

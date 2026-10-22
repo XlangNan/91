@@ -7,7 +7,7 @@ export const SHORTS_MEDIA_SEEK_INTERVAL_MS = 80;
 
 export type ShortsSlideGesturesOptions = {
   getVideoElement: () => HTMLVideoElement | null;
-  surfaceRef: React.RefObject<HTMLElement>;
+  surfaceRef: React.RefObject<HTMLElement | null>;
   shouldMount: boolean;
   /** 非活跃视频、隐藏遮罩、播放失败等状态下不响应媒体手势 */
   disabled: boolean;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createContext, createElement, useCallback, useContext, useEffect, type Dispatch, type SetStateAction } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router";
 import { AdminRouteCache, useAdminRouteActive } from "../src/admin/AdminRouteCache";
 import { useAdminPaginationSync } from "../src/admin/useAdminPaginationSync";
@@ -51,8 +51,8 @@ function harness(t: TestContext, initialPath: string, initialData: Partial<Pagin
   const tree = () => createElement(PaginationContext.Provider, { value: data },
     createElement(MemoryRouter, { initialEntries: [initialPath] }, createElement(App)),
   );
-  let renderer!: ReturnType<typeof create>;
-  act(() => { renderer = create(tree()); });
+  let renderer!: ReturnType<typeof render>;
+  act(() => { renderer = render(tree()); });
   t.after(() => { act(() => renderer.unmount()); });
   return {
     get path() { return location.pathname + location.search; },
@@ -62,7 +62,7 @@ function harness(t: TestContext, initialPath: string, initialData: Partial<Pagin
     navigate(path: string) { act(() => navigate(path)); },
     update(next: Partial<PaginationData>) {
       data = { ...data, ...next };
-      act(() => renderer.update(tree()));
+      act(() => renderer.rerender(tree()));
     },
   };
 }

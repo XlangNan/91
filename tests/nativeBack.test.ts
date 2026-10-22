@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createElement, useState, type ReactNode } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import {
   createMemoryRouter,
   RouterProvider,
@@ -32,7 +32,6 @@ async function mount(
     direct?: boolean;
     entries?: { pathname: string; search?: string; key: string; state?: unknown }[];
     children?: ReactNode;
-    document?: unknown;
   } = {}
 ) {
   const watchers: FakeCloseWatcher[] = [];
@@ -52,17 +51,13 @@ async function mount(
     }
   }
 
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
-  if (options.document) {
-    Object.defineProperty(globalThis, "document", { configurable: true, value: options.document });
-  }
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: {
-      navigator: { userAgent: options.android === false ? "Desktop Chrome" : "Android Chrome" },
-      CloseWatcher: options.supported === false ? undefined : FakeCloseWatcher,
-    },
+  const originalAgent = Object.getOwnPropertyDescriptor(window.navigator, "userAgent");
+  const originalWatcher = Object.getOwnPropertyDescriptor(window, "CloseWatcher");
+  Object.defineProperty(window.navigator, "userAgent", {
+    configurable: true, value: options.android === false ? "Desktop Chrome" : "Android Chrome",
+  });
+  Object.defineProperty(window, "CloseWatcher", {
+    configurable: true, value: options.supported === false ? undefined : FakeCloseWatcher,
   });
 
   const entries = options.entries ?? [listing, firstVideo, nextVideo];
@@ -85,20 +80,18 @@ async function mount(
     initialIndex: options.direct ? 0 : entries.length - 1,
   });
   const stopObserving = observeNavigationHistory(router);
-  let renderer!: ReturnType<typeof create>;
+  let renderer!: ReturnType<typeof render>;
   await act(async () => {
-    renderer = create(createElement(RouterProvider, { router }));
+    renderer = render(createElement(RouterProvider, { router }));
   });
   t.after(async () => {
     await act(async () => renderer.unmount());
     stopObserving();
     router.dispose();
-    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
-    else delete (globalThis as Record<string, unknown>).window;
-    if (options.document) {
-      if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
-      else delete (globalThis as Record<string, unknown>).document;
-    }
+    if (originalAgent) Object.defineProperty(window.navigator, "userAgent", originalAgent);
+    else Reflect.deleteProperty(window.navigator, "userAgent");
+    if (originalWatcher) Object.defineProperty(window, "CloseWatcher", originalWatcher);
+    else Reflect.deleteProperty(window, "CloseWatcher");
     navigationHistory.record("native-back-test-cleanup", "POP");
   });
 
@@ -316,7 +309,6 @@ test("player settings close before web fullscreen, and player cleanup releases b
 });
 
 test("shorts clear-screen history uses the shared watcher without skipping normal playback", async (t) => {
-  const doc = Object.assign(new EventTarget(), { documentElement: {}, fullscreenElement: null });
   function Shorts() { useShortsNavigation(); return null; }
   function ActiveShorts() {
     return useLocation().pathname === "/shorts" ? createElement(Shorts) : null;
@@ -325,7 +317,6 @@ test("shorts clear-screen history uses the shared watcher without skipping norma
   const clear = { pathname: "/shorts", key: "shorts-clear", state: { shortsPlayback: "clear" } };
   const view = await mount(t, {
     entries: [listing, normal, clear],
-    document: doc,
     children: createElement(ActiveShorts),
   });
   assert.equal(view.activeWatchers().length, 1);
@@ -339,14 +330,12 @@ test("shorts clear-screen history uses the shared watcher without skipping norma
 });
 
 test("shorts entry initialization preserves native back through its prepared home entry", async (t) => {
-  const doc = Object.assign(new EventTarget(), { documentElement: {}, fullscreenElement: null });
   function Shorts() { useShortsNavigation(); return null; }
   function ActiveShorts() {
     return useLocation().pathname === "/shorts" ? createElement(Shorts) : null;
   }
   const view = await mount(t, {
     entries: [listing, { pathname: "/shorts", key: "shorts-initial" }],
-    document: doc,
     children: createElement(ActiveShorts),
   });
   assert.equal(view.location().state.shortsPlayback, "normal");

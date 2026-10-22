@@ -8,7 +8,7 @@ import { SHORTS_CONTROL_SHORTCUTS } from "./controlShortcuts";
 type Props = {
   paused: boolean;
   disabled: boolean;
-  clockRef: RefObject<HTMLSpanElement>;
+  clockRef: RefObject<HTMLSpanElement | null>;
   clock: string;
   onTogglePlay: () => void;
   muted: boolean;

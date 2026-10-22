@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, fireEvent, render } from "./helpers/dom";
 import { ToastProvider } from "../src/components/ToastContext";
 import { P115QRCodeLogin } from "../src/admin/drive/P115QRCodeLogin";
 
@@ -13,12 +13,6 @@ function deferred<T>() {
 
 function harness(t: TestContext) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const originals = ["window", "document"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
-  Object.defineProperty(globalThis, "window", { configurable: true, value: {
-    setTimeout, clearTimeout, matchMedia: () => ({ matches: true }),
-  } });
-  // React's test renderer stores portal children in this container.
-  Object.defineProperty(globalThis, "document", { configurable: true, value: { body: { nodeType: 1, children: [] } } });
   const reads: { uid: string; signal: AbortSignal; response: ReturnType<typeof deferred<Response>> }[] = [];
   let sequence = 0;
   const fetch = t.mock.method(globalThis, "fetch", async (input, init) => {
@@ -29,23 +23,19 @@ function harness(t: TestContext) {
     }
     return Response.json({ uid: `session-${++sequence}`, time: 1, sign: "test-sign", qrImageDataUrl: "data:image/png;base64,test" });
   });
-  let renderer: ReturnType<typeof create> | undefined;
+  let renderer: ReturnType<typeof render> | undefined;
   t.after(async () => {
     await act(async () => renderer?.unmount());
-    for (const [key, original] of originals) {
-      if (original) Object.defineProperty(globalThis, key, original);
-      else Reflect.deleteProperty(globalThis, key);
-    }
   });
-  const beginStart = () => renderer!.root.findByProps({ className: "admin-btn" }).props.onClick() as Promise<void>;
+  const beginStart = () => { fireEvent.click(renderer!.container.querySelector("button.admin-btn")!); };
   return {
     reads, fetch, beginStart,
-    get root() { return renderer!.root; },
+    get root() { return renderer!.container; },
     render: async (onCookie: (cookie: string) => void) => {
       const element = createElement(ToastProvider, null, createElement(P115QRCodeLogin, { onCookie }));
       await act(async () => {
-        if (renderer) renderer.update(element);
-        else renderer = create(element);
+        if (renderer) renderer.rerender(element);
+        else renderer = render(element);
       });
     },
     start: async () => { await act(async () => { await beginStart(); }); },
@@ -109,13 +99,13 @@ test("115 QR login shows a concise gateway error and retries the same session", 
   await act(async () => env.reads[0].response.resolve(new Response("<!DOCTYPE html><html>Bad gateway</html>", {
     status: 502, headers: { "Content-Type": "text/html" },
   })));
-  assert.equal(env.root.findByProps({ className: "admin-form__help" }).children.join(""), "网站服务暂时不可用（HTTP 502），请稍后重试");
+  assert.equal(env.root.querySelector(".admin-form__help")!.textContent, "网站服务暂时不可用（HTTP 502），请稍后重试");
   await env.tick(2000);
   assert.equal(env.reads.length, 2);
   assert.equal(env.reads[0].uid, env.reads[1].uid);
   await act(async () => env.reads[1].response.resolve(Response.json({ state: "success", status: 2, cookie: "recovered-cookie" })));
   assert.deepEqual(cookies, ["recovered-cookie"]);
-  assert.equal(env.root.findAllByProps({ className: "admin-form__help" }).length, 0);
+  assert.equal(env.root.querySelectorAll(".admin-form__help").length, 0);
 });
 
 test("closing 115 QR login cancels its pending poll", async (t) => {
@@ -135,13 +125,11 @@ test("closing 115 QR login cancels generation and prevents a late session from s
   let signal!: AbortSignal;
   env.fetch.mock.mockImplementation(async (_input, init) => { signal = init!.signal as AbortSignal; return generation.promise; });
   await env.render(() => assert.fail("A closed QR login returned a cookie"));
-  let starting!: Promise<void>;
-  await act(async () => { starting = env.beginStart(); });
+  await act(async () => { env.beginStart(); });
   await env.unmount();
   assert.equal(signal.aborted, true);
   await act(async () => {
     generation.resolve(Response.json({ uid: "late", time: 1, sign: "test-sign" }));
-    await starting;
   });
   assert.equal(env.fetch.mock.callCount(), 1);
 });

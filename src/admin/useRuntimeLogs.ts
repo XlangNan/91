@@ -113,7 +113,7 @@ export function useRuntimeLogs({ autoRefresh, filters = EMPTY_FILTERS }: { autoR
 
   const activeRequestRef = useRef<ActiveLogRequest | null>(null);
   const requestVersionRef = useRef(0);
-  const cursorRef = useRef<string>();
+  const cursorRef = useRef<string | undefined>(undefined);
   const readyRef = useRef(false);
 
   const invalidateActiveRequest = useCallback(() => {

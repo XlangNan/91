@@ -1,5 +1,7 @@
 * text=auto eol=lf
 
+backend/vendor/** linguist-vendored -whitespace
+
 *.png binary
 *.jpg binary
 *.jpeg binary

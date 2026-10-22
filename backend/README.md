@@ -1,6 +1,6 @@
 ## 快速开始
 
-依赖：**Go 1.23+**、**ffmpeg / ffprobe**（用于封面、预览视频、媒体探测/转码和内容级去重，必装；路径可在配置里改）。`sampled_sha256` 指纹由 Go 直接读取 Range 字节计算，不依赖 ffmpeg。SQLite 用纯 Go 驱动（modernc），无需系统库；依赖已 vendored，可离线构建。跑爬虫需要 `python3`。
+依赖：**Go 1.27.3+**、**ffmpeg / ffprobe**（用于封面、预览视频、媒体探测/转码和内容级去重，必装；路径可在配置里改）。`sampled_sha256` 指纹由 Go 直接读取 Range 字节计算，不依赖 ffmpeg。SQLite 用纯 Go 驱动（modernc），无需系统库；依赖已 vendored，可离线构建。跑爬虫需要 `python3`。
 
 ```bash
 cd backend
@@ -9,7 +9,7 @@ go test ./...              # 单元测试；缺 ffmpeg / python3 时相关测试
 go build -o server ./cmd/server
 ```
 
-前端开发在仓库根目录 `npm run dev`，vite 会把 `/api`、`/p`、`/admin/api`、`/peer` 代理到 9192。所有配置项及注释见 [config.example.yaml](config.example.yaml)，正文只在涉及行为时提及个别配置。
+前端使用 **Node.js 24.22.1 LTS** 和 **npm 12.2.1**，版本分别由仓库根目录的 `.nvmrc` 和 `package.json` 的 `packageManager` 指定。在仓库根目录运行 `npm run dev` 开发前端，vite 会把 `/api`、`/p`、`/admin/api`、`/peer` 代理到 9192。所有配置项及注释见 [config.example.yaml](config.example.yaml)，正文只在涉及行为时提及个别配置。
 
 每次启动时，服务会先迁移旧版数据库配置，再按随程序打包的 `config.example.yaml` 重建实际配置：保留模板中同名字段的已有值（包括 `false`、`0`、空字符串和空列表），缺失字段使用模板默认值，字段顺序和注释统一采用模板，模板外的字段及自定义注释会被清理。更新完成后原子替换原文件并保留文件权限；配置没有变化时不会重复写入。升级无需手动复制模板，Docker 和原生部署使用同一流程。
 

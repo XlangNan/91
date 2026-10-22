@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createElement } from "react";
-import { create, act } from "react-test-renderer";
+import { render, act } from "./helpers/dom";
 import { useShortsPlaybackPreferences } from "../src/shorts/useShortsPlaybackPreferences";
 import { restoreShortsPlaybackRate } from "../src/shorts/playbackRate";
 
 function setup(t: TestContext) {
-  const browserDocument = { visibilityState: "visible" };
-  const original = Object.getOwnPropertyDescriptor(globalThis, "document");
-  Object.defineProperty(globalThis, "document", { configurable: true, value: browserDocument });
-  t.after(() => {
-    if (original) Object.defineProperty(globalThis, "document", original);
-    else Reflect.deleteProperty(globalThis, "document");
-  });
+  const browserDocument = globalThis.document;
+  browserDocument.visibilityState = "visible";
   const video = Object.assign(new EventTarget(), {
     defaultPlaybackRate: 1, playbackRate: 1, loop: true, ended: false, volume: 1,
   });
@@ -30,15 +25,15 @@ function setup(t: TestContext) {
     onAdvance: () => { advances++; },
   };
   function Probe() { useShortsPlaybackPreferences(options); return null; }
-  let renderer: ReturnType<typeof create>;
-  act(() => { renderer = create(createElement(Probe)); });
+  let renderer: ReturnType<typeof render>;
+  act(() => { renderer = render(createElement(Probe)); });
   t.after(() => act(() => renderer.unmount()));
   return {
     video, browserDocument,
     get advances() { return advances; },
     update(next: Partial<typeof options>) {
       options = { ...options, ...next };
-      act(() => renderer.update(createElement(Probe)));
+      act(() => renderer.rerender(createElement(Probe)));
     },
     end() { video.ended = true; video.dispatchEvent(new Event("ended")); },
     unmount() { act(() => renderer.unmount()); },

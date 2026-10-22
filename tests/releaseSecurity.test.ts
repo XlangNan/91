@@ -8,8 +8,13 @@ const packageJson = JSON.parse(
 ) as {
   allowScripts?: Record<string, boolean>;
   engines?: Record<string, string>;
+  packageManager?: string;
   scripts?: Record<string, string>;
 };
+const nodeVersion = readFileSync(
+  new URL("../.nvmrc", import.meta.url),
+  "utf8"
+).trim();
 const dockerfile = readFileSync(
   new URL("../Dockerfile", import.meta.url),
   "utf8"
@@ -45,11 +50,14 @@ test("frontend verification rejects every npm audit finding before release", () 
 });
 
 test("container and release builds use supported Node and run checks", () => {
-  assert.equal(packageJson.engines?.node, ">=22.12.0");
-  assert.match(dockerfile, /^FROM node:24-slim AS frontend$/m);
+  assert.match(nodeVersion, /^\d+\.\d+\.\d+$/);
+  assert.equal(packageJson.engines?.node, `^${nodeVersion}`);
+  assert.match(packageJson.packageManager ?? "", /^npm@\d+\.\d+\.\d+$/);
+  assert.equal(packageJson.engines?.npm, `^${packageJson.packageManager!.slice(4)}`);
+  assert.ok(dockerfile.includes(`FROM node:${nodeVersion}-slim AS frontend\n`));
   assert.match(dockerfile, /^COPY package\.json package-lock\.json \.npmrc \.\/$/m);
-  assert.match(dockerWorkflow, /node-version: "24"/);
-  assert.match(releaseWorkflow, /node-version: "24"/);
+  assert.match(dockerWorkflow, /node-version-file: \.nvmrc/);
+  assert.match(releaseWorkflow, /node-version-file: \.nvmrc/);
   const jobs = parse(dockerWorkflow).jobs;
   assert.ok(jobs.prepare.steps.some((step: { run?: string }) => step.run === "npm run check"));
   assert.equal(jobs.build.needs, "prepare", "Image builds must wait for frontend checks");

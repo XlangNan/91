@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement, useEffect } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import { useDriveDetailData } from "../src/admin/drive/useDriveDetailData";
 
 test("hidden documents and inactive retained routes close the stream and revalidate immediately on return", async (t) => {
-  class TestDocument extends EventTarget { hidden = false; }
   class TestStream {
     static instances: TestStream[] = [];
     onopen: (() => void) | null = null;
@@ -15,17 +14,14 @@ test("hidden documents and inactive retained routes close the stream and revalid
     addEventListener() {}
     close() { this.closed = true; }
   }
-  const document = new TestDocument();
-  let renderer: ReturnType<typeof create> | undefined;
-  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const document = globalThis.document;
+  document.hidden = false;
+  let renderer: ReturnType<typeof render> | undefined;
   const originalStream = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
-  Object.defineProperty(globalThis, "document", { configurable: true, value: document });
-  Object.defineProperty(globalThis, "window", { configurable: true, value: new EventTarget() });
   Object.defineProperty(globalThis, "EventSource", { configurable: true, value: TestStream });
   t.after(async () => {
     if (renderer) await act(async () => renderer!.unmount());
-    for (const [key, original] of [["document", originalDocument], ["window", originalWindow], ["EventSource", originalStream]] as const) {
+    for (const [key, original] of [["EventSource", originalStream]] as const) {
       if (original) Object.defineProperty(globalThis, key, original); else Reflect.deleteProperty(globalThis, key);
     }
   });
@@ -39,7 +35,7 @@ test("hidden documents and inactive retained routes close the stream and revalid
   });
   let state!: ReturnType<typeof useDriveDetailData>;
   function Probe({ active }: { active: boolean }) { state = useDriveDetailData("lifecycle", active); return null; }
-  await act(async () => { renderer = create(createElement(Probe, { active: true })); });
+  await act(async () => { renderer = render(createElement(Probe, { active: true })); });
   assert.equal(fetch.mock.callCount(), 4);
   assert.equal(state.drive?.name, "Lifecycle");
   await act(async () => { document.hidden = true; document.dispatchEvent(new Event("visibilitychange")); });
@@ -49,23 +45,20 @@ test("hidden documents and inactive retained routes close the stream and revalid
   await act(async () => { document.hidden = false; document.dispatchEvent(new Event("visibilitychange")); });
   assert.equal(fetch.mock.callCount(), 8);
   assert.equal(TestStream.instances.length, 2);
-  await act(async () => { renderer!.update(createElement(Probe, { active: false })); });
+  await act(async () => { renderer!.rerender(createElement(Probe, { active: false })); });
   assert.equal(TestStream.instances[1].closed, true);
-  await act(async () => { renderer!.update(createElement(Probe, { active: true })); });
+  await act(async () => { renderer!.rerender(createElement(Probe, { active: true })); });
   assert.equal(fetch.mock.callCount(), 12);
   assert.equal(TestStream.instances.length, 3);
 });
 
 test("a new authenticated page cannot redirect using the previous page's authorization failure", async (t) => {
-  class TestDocument extends EventTarget { hidden = false; }
   class TestStream {
     addEventListener() {}
     close() {}
   }
-  let renderer: ReturnType<typeof create> | undefined;
-  const originals = ["document", "window", "EventSource"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
-  Object.defineProperty(globalThis, "document", { configurable: true, value: new TestDocument() });
-  Object.defineProperty(globalThis, "window", { configurable: true, value: new EventTarget() });
+  let renderer: ReturnType<typeof render> | undefined;
+  const originals = ["EventSource"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   Object.defineProperty(globalThis, "EventSource", { configurable: true, value: TestStream });
   t.after(async () => {
     if (renderer) await act(async () => renderer!.unmount());
@@ -85,29 +78,26 @@ test("a new authenticated page cannot redirect using the previous page's authori
     useEffect(() => { if (detail.unauthorized) redirects++; }, [detail.unauthorized]);
     return null;
   }
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await act(async () => { renderer = render(createElement(Probe)); });
   assert.equal(state.unauthorized, true);
   assert.equal(redirects, 1);
   await act(async () => renderer!.unmount());
 
   authenticated = true;
   redirects = 0;
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await act(async () => { renderer = render(createElement(Probe)); });
   assert.equal(redirects, 0);
   assert.equal(state.unauthorized, false);
   assert.equal(state.loading, true);
 });
 
 test("switching drives retains their data within the same page instance", async (t) => {
-  class TestDocument extends EventTarget { hidden = false; }
   class TestStream {
     addEventListener() {}
     close() {}
   }
-  let renderer: ReturnType<typeof create> | undefined;
-  const originals = ["document", "window", "EventSource"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
-  Object.defineProperty(globalThis, "document", { configurable: true, value: new TestDocument() });
-  Object.defineProperty(globalThis, "window", { configurable: true, value: new EventTarget() });
+  let renderer: ReturnType<typeof render> | undefined;
+  const originals = ["EventSource"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   Object.defineProperty(globalThis, "EventSource", { configurable: true, value: TestStream });
   t.after(async () => {
     if (renderer) await act(async () => renderer!.unmount());
@@ -127,11 +117,11 @@ test("switching drives retains their data within the same page instance", async 
   });
   let state!: ReturnType<typeof useDriveDetailData>;
   function Probe({ id }: { id: string }) { state = useDriveDetailData(id, true); return null; }
-  await act(async () => { renderer = create(createElement(Probe, { id: "cached-a" })); });
+  await act(async () => { renderer = render(createElement(Probe, { id: "cached-a" })); });
   assert.equal(state.drive?.name, "cached-a");
-  await act(async () => renderer!.update(createElement(Probe, { id: "cached-b" })));
+  await act(async () => renderer!.rerender(createElement(Probe, { id: "cached-b" })));
   assert.equal(state.drive?.name, "cached-b");
   holdReads = true;
-  await act(async () => renderer!.update(createElement(Probe, { id: "cached-a" })));
+  await act(async () => renderer!.rerender(createElement(Probe, { id: "cached-a" })));
   assert.equal(state.drive?.name, "cached-a");
 });

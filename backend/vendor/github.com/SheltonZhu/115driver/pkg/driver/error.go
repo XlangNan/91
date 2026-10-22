@@ -79,6 +79,8 @@ var (
 
 	ErrPickCodeIsEmpty = errors.New("empty pickcode")
 
+	ErrPickCodeIsNotExistOrHasDeleted = errors.New("pickcode is not exist or has deleted")
+	
 	ErrUploadSH1Invalid = errors.New("userid/filesize/target/pickcode/ invalid")
 
 	ErrUploadSigInvalid = errors.New("sig invalid")
@@ -125,6 +127,7 @@ var (
 		// pickCode
 		50003: ErrPickCodeNotExist,
 		50001: ErrPickCodeIsEmpty,
+		50015: ErrPickCodeIsNotExistOrHasDeleted,
 		// upload SH1
 		402: ErrUploadSH1Invalid,
 		400: ErrUploadSigInvalid,

@@ -1,21 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import { useShortsFeed } from "../src/shorts/useShortsFeed";
 import { loadShortsFeedState, saveShortsFeedState, type ShortsFeedMode } from "../src/shorts/shortsFeed";
 
 test("switching shorts modes aborts old work and ignores late responses after returning", async (t) => {
-  const originals = ["window", "localStorage"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
-  const events = Object.assign(new EventTarget(), { setTimeout, clearTimeout });
+  const originals = ["localStorage"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
+  const events = globalThis.window;
   const storage = new Map<string, string>();
-  Object.defineProperty(globalThis, "window", { configurable: true, value: events });
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value),
     removeItem: (key: string) => storage.delete(key),
   } });
-  let renderer: ReturnType<typeof create> | undefined;
+  let renderer: ReturnType<typeof render> | undefined;
   t.after(async () => {
     await act(async () => renderer?.unmount());
     for (const [key, original] of originals) {
@@ -38,13 +37,13 @@ test("switching shorts modes aborts old work and ignores late responses after re
     total: 2, feedToken: token, nextCursor: 2, roundComplete: true,
   });
   saveShortsFeedState({ feedToken: "latest-bookmark", cursor: 5 }, "latest");
-  await act(async () => { renderer = create(createElement(Probe, { mode: "latest" })); });
+  await act(async () => { renderer = render(createElement(Probe, { mode: "latest" })); });
   assert.equal(pending[0].mode, "latest");
-  await act(async () => renderer!.update(createElement(Probe, { mode: "hot" })));
+  await act(async () => renderer!.rerender(createElement(Probe, { mode: "hot" })));
   assert.equal(pending[0].signal.aborted, true);
   await act(async () => pending[1].resolve(response("hot-feed")));
   assert.equal(state.items[0].id, "hot-feed-1");
-  await act(async () => renderer!.update(createElement(Probe, { mode: "latest" })));
+  await act(async () => renderer!.rerender(createElement(Probe, { mode: "latest" })));
   assert.equal(state.loading, true);
   await act(async () => pending[0].resolve(response("stale-feed")));
   assert.deepEqual(state.items, []);

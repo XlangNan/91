@@ -1,23 +1,13 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import { useShortsKeyboard, type ShortsKeyboardOptions } from "../src/shorts/useShortsKeyboard";
 
 function setup(t: TestContext) {
-  class FocusedElement {
-    constructor(public tagName: string, public isContentEditable = false) {}
-    closest() { return null; }
-  }
-  const browserWindow = new EventTarget();
-  const browserDocument = Object.assign(new EventTarget(), {
-    activeElement: null as FocusedElement | null, hidden: false,
-  });
-  const globals = { window: browserWindow, document: browserDocument, HTMLElement: FocusedElement };
-  const originals = Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
-  for (const [key, value] of Object.entries(globals)) {
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
+  const browserWindow = window;
+  const browserDocument = document;
+  browserDocument.hidden = false;
   const calls = { autoAdvance: 0, clearScreen: 0, fullscreen: 0 };
   const actions = new Map<string, {
     clicks: number;
@@ -46,14 +36,10 @@ function setup(t: TestContext) {
     enableSidebarShortcuts: true,
   };
   function Probe() { useShortsKeyboard(options); return null; }
-  let renderer: ReturnType<typeof create>;
-  act(() => { renderer = create(createElement(Probe)); });
+  let renderer: ReturnType<typeof render>;
+  act(() => { renderer = render(createElement(Probe)); });
   t.after(() => {
     act(() => renderer.unmount());
-    for (const [key, original] of originals) {
-      if (original) Object.defineProperty(globalThis, key, original);
-      else Reflect.deleteProperty(globalThis, key);
-    }
   });
   return {
     calls,
@@ -77,10 +63,14 @@ function setup(t: TestContext) {
     },
     update(next: Partial<ShortsKeyboardOptions>) {
       options = { ...options, ...next };
-      act(() => { renderer.update(createElement(Probe)); });
+      act(() => { renderer.rerender(createElement(Probe)); });
     },
     focus(tagName: string, editable = false) {
-      browserDocument.activeElement = new FocusedElement(tagName, editable);
+      const element = document.createElement(tagName);
+      element.tabIndex = 0;
+      Object.defineProperty(element, "isContentEditable", { value: editable });
+      document.body.append(element);
+      element.focus();
     },
   };
 }

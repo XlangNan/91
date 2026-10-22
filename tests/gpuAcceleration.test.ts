@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, fireEvent, render } from "./helpers/dom";
 import { GPUAccelerationSettings } from "../src/admin/settings/GPUAccelerationSettings";
 import { DEFAULT_DRAFT, applyVisualFields, changedVisualFields, parseConfig } from "../src/admin/settings/configYaml";
 
@@ -31,18 +31,11 @@ test("GPU is opt-in and round-trips through both YAML editor styles", () => {
 });
 
 test("GPU switch verifies hardware before editing the draft and ignores an older status response", async (t) => {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   let refresh = () => {};
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: { setInterval: (callback: () => void) => { refresh = callback; return 1; }, clearInterval: () => {} },
-  });
-  let renderer: ReturnType<typeof create> | undefined;
-  t.after(async () => {
-    await act(async () => renderer?.unmount());
-    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
-    else Reflect.deleteProperty(globalThis, "window");
-  });
+  t.mock.method(window, "setInterval", (callback: () => void) => { refresh = callback; return 1; });
+  t.mock.method(window, "clearInterval", () => {});
+  let renderer: ReturnType<typeof render> | undefined;
+  t.after(async () => { await act(async () => renderer?.unmount()); });
   const requests: { url: string; signal: AbortSignal; resolve: (response: Response) => void; reject: (cause: Error) => void }[] = [];
   t.mock.method(globalThis, "fetch", (input, init) => new Promise<Response>((resolve, reject) => {
     requests.push({ url: String(input), signal: init!.signal as AbortSignal, resolve, reject });
@@ -54,51 +47,51 @@ test("GPU switch verifies hardware before editing the draft and ignores an older
     onChange: (enabled: boolean) => changes.push(enabled),
     onError: (message: string) => errors.push(message),
   };
-  await act(async () => { renderer = create(createElement(GPUAccelerationSettings, props)); });
-  const toggle = () => renderer!.root.findByProps({ id: "generation-gpu-toggle" });
-  const detail = () => renderer!.root.findByProps({ id: "generation-gpu-detail" });
-  assert.equal(toggle().props["aria-checked"], false);
-  await act(async () => toggle().props.onClick());
+  await act(async () => { renderer = render(createElement(GPUAccelerationSettings, props)); });
+  const toggle = () => renderer!.container.querySelector<HTMLButtonElement>("#generation-gpu-toggle")!;
+  const detail = () => renderer!.container.querySelector<HTMLElement>("#generation-gpu-detail")!;
+  assert.equal(toggle().getAttribute("aria-checked"), "false");
+  await act(async () => fireEvent.click(toggle()));
   assert.equal(requests[1].url, "/admin/api/generation/gpu/probe");
-  assert.equal(toggle().props.disabled, true);
-  assert.deepEqual(detail().children, ["检测中"]);
-  assert.equal(toggle().props["aria-describedby"], "generation-gpu-detail");
+  assert.equal(toggle().disabled, true);
+  assert.deepEqual(detail().textContent, "检测中");
+  assert.equal(toggle().getAttribute("aria-describedby"), "generation-gpu-detail");
   assert.deepEqual(changes, []);
   await act(async () => requests[1].resolve(Response.json({
     enabled: false, checked: true, available: false, reason: "缺少 GPU 设备", fallbackCount: 0,
   })));
   assert.deepEqual(changes, []);
   assert.deepEqual(errors, ["未检测到 GPU"]);
-  assert.equal(toggle().props["aria-checked"], false);
-  assert.equal(toggle().props.disabled, false);
-  assert.deepEqual(detail().children, []);
-  assert.equal(renderer!.root.findAllByProps({ role: "alert" }).length, 0);
-  assert.ok(!JSON.stringify(renderer!.toJSON()).includes("缺少 GPU 设备"));
-  await act(async () => toggle().props.onClick());
+  assert.equal(toggle().getAttribute("aria-checked"), "false");
+  assert.equal(toggle().disabled, false);
+  assert.equal(detail().textContent, "");
+  assert.equal(renderer!.container.querySelectorAll('[role="alert"]').length, 0);
+  assert.ok(!renderer!.container.textContent!.includes("缺少 GPU 设备"));
+  await act(async () => fireEvent.click(toggle()));
   await act(async () => requests[2].resolve(Response.json({
     enabled: false, checked: true, available: true, backend: "cuda", device: "0",
     name: "NVIDIA GeForce RTX 4060 Laptop GPU", fallbackCount: 0,
   })));
   assert.deepEqual(changes, [true]);
-  await act(async () => renderer!.update(createElement(GPUAccelerationSettings, {
+  await act(async () => renderer!.rerender(createElement(GPUAccelerationSettings, {
     ...props, enabled: true,
   })));
-  assert.deepEqual(detail().children, ["RTX 4060"]);
-  assert.equal(detail().props.title, "NVIDIA GeForce RTX 4060 Laptop GPU");
+  assert.deepEqual(detail().textContent, "RTX 4060");
+  assert.equal(detail().getAttribute("title"), "NVIDIA GeForce RTX 4060 Laptop GPU");
   await act(async () => requests[0].resolve(Response.json({
     enabled: false, checked: true, available: false, reason: "过期的 GPU 检测错误", fallbackCount: 0,
   })));
-  assert.equal(renderer!.root.findAllByProps({ role: "alert" }).length, 0);
-  assert.deepEqual(detail().children, ["RTX 4060"]);
+  assert.equal(renderer!.container.querySelectorAll('[role="alert"]').length, 0);
+  assert.deepEqual(detail().textContent, "RTX 4060");
   assert.deepEqual(errors, ["未检测到 GPU"]);
-  await act(async () => renderer!.update(createElement(GPUAccelerationSettings, props)));
-  assert.deepEqual(detail().children, []);
-  assert.equal(detail().props.title, undefined);
-  assert.equal(toggle().props["aria-describedby"], undefined);
+  await act(async () => renderer!.rerender(createElement(GPUAccelerationSettings, props)));
+  assert.equal(detail().textContent, "");
+  assert.equal(detail().getAttribute("title"), null);
+  assert.equal(toggle().getAttribute("aria-describedby"), null);
   // A new parent callback is used when a slow probe finishes.
   const latestChanges: boolean[] = [];
-  await act(async () => toggle().props.onClick());
-  await act(async () => renderer!.update(createElement(GPUAccelerationSettings, {
+  await act(async () => fireEvent.click(toggle()));
+  await act(async () => renderer!.rerender(createElement(GPUAccelerationSettings, {
     ...props, onChange: (enabled: boolean) => latestChanges.push(enabled),
   })));
   await act(async () => requests[3].resolve(Response.json({
@@ -106,21 +99,21 @@ test("GPU switch verifies hardware before editing the draft and ignores an older
     name: "Intel(R) Iris(R) Xe Graphics", fallbackCount: 0,
   })));
   assert.deepEqual(latestChanges, [true]);
-  await act(async () => renderer!.update(createElement(GPUAccelerationSettings, {
+  await act(async () => renderer!.rerender(createElement(GPUAccelerationSettings, {
     ...props, enabled: true,
   })));
-  assert.deepEqual(detail().children, ["Iris Xe"]);
-  await act(async () => toggle().props.onClick());
+  assert.deepEqual(detail().textContent, "Iris Xe");
+  await act(async () => fireEvent.click(toggle()));
   assert.deepEqual(changes, [true, false]);
   assert.equal(requests.length, 4, "disabling does not probe hardware");
-  await act(async () => renderer!.update(createElement(GPUAccelerationSettings, props)));
-  assert.deepEqual(detail().children, []);
-  await act(async () => toggle().props.onClick());
+  await act(async () => renderer!.rerender(createElement(GPUAccelerationSettings, props)));
+  assert.equal(detail().textContent, "");
+  await act(async () => fireEvent.click(toggle()));
   await act(async () => requests[4].reject(new Error("GPU 检测服务不可用")));
   assert.deepEqual(errors, ["未检测到 GPU", "GPU 检测服务不可用"]);
-  assert.equal(toggle().props["aria-checked"], false);
-  assert.equal(toggle().props.disabled, false);
-  assert.equal(renderer!.root.findAllByProps({ role: "alert" }).length, 0);
+  assert.equal(toggle().getAttribute("aria-checked"), "false");
+  assert.equal(toggle().disabled, false);
+  assert.equal(renderer!.container.querySelectorAll('[role="alert"]').length, 0);
   await act(async () => refresh());
   await act(async () => requests[5].reject(new Error("读取 GPU 状态失败")));
   assert.deepEqual(errors, ["未检测到 GPU", "GPU 检测服务不可用"]);
@@ -129,15 +122,8 @@ test("GPU switch verifies hardware before editing the draft and ignores an older
 });
 
 test("GPU header restores compact model names from cached status", async (t) => {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: { setInterval: () => 1, clearInterval: () => {} },
-  });
-  t.after(() => {
-    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
-    else Reflect.deleteProperty(globalThis, "window");
-  });
+  t.mock.method(window, "setInterval", () => 1);
+  t.mock.method(window, "clearInterval", () => {});
   let name: string | undefined;
   t.mock.method(globalThis, "fetch", async () => Response.json({
     enabled: true, checked: true, available: true, name, fallbackCount: 0,
@@ -151,19 +137,19 @@ test("GPU header restores compact model names from cached status", async (t) => 
     [undefined, undefined],
   ]) {
     name = full;
-    let renderer!: ReturnType<typeof create>;
-    await act(async () => { renderer = create(createElement(GPUAccelerationSettings, {
+    let renderer!: ReturnType<typeof render>;
+    await act(async () => { renderer = render(createElement(GPUAccelerationSettings, {
       enabled: true, disabled: false, onChange: () => {}, onError: () => assert.fail("Reading status must not notify"),
     })); });
-    const detail = renderer.root.findByProps({ id: "generation-gpu-detail" });
-    assert.deepEqual(detail.children, compact ? [compact] : []);
-    assert.equal(detail.props.title, full);
-    await act(async () => renderer.update(createElement(GPUAccelerationSettings, {
+    const detail = renderer.container.querySelector<HTMLElement>("#generation-gpu-detail")!;
+    assert.deepEqual(detail.textContent, compact ?? "");
+    assert.equal(detail.getAttribute("title"), full ?? null);
+    await act(async () => renderer.rerender(createElement(GPUAccelerationSettings, {
       enabled: false, disabled: false, onChange: () => {}, onError: () => assert.fail("Disabling must not notify"),
     })));
-    assert.deepEqual(detail.children, []);
-    assert.equal(detail.props.title, undefined);
-    assert.equal(renderer.root.findByProps({ id: "generation-gpu-toggle" }).props["aria-describedby"], undefined);
+    assert.equal(detail.textContent, "");
+    assert.equal(detail.getAttribute("title"), null);
+    assert.equal(renderer.container.querySelector("#generation-gpu-toggle")!.getAttribute("aria-describedby"), null);
     await act(async () => renderer.unmount());
   }
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import { useShortsAudio } from "../src/shorts/useShortsAudio";
 
 function setup(t: TestContext, saved?: string) {
@@ -26,8 +26,8 @@ function setup(t: TestContext, saved?: string) {
   });
   let audio: ReturnType<typeof useShortsAudio>;
   function Probe() { audio = useShortsAudio(); return null; }
-  let renderer: ReturnType<typeof create>;
-  const mount = () => act(() => { renderer = create(createElement(Probe)); });
+  let renderer: ReturnType<typeof render>;
+  const mount = () => act(() => { renderer = render(createElement(Probe)); });
   mount();
   t.after(() => {
     act(() => renderer.unmount());

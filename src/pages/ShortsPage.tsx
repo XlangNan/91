@@ -1509,7 +1509,7 @@ type SlideProps = {
   /** 当前 slide 是否正由键盘右键长按驱动 2 倍速播放。 */
   keyboardFastPlayback: boolean;
   /** iOS 所有 slide 共用的同一个持久 video DOM 节点 */
-  sharedVideoRef?: React.RefObject<HTMLVideoElement>;
+  sharedVideoRef?: React.RefObject<HTMLVideoElement | null>;
   /** 持久 video 当前应移动到的 slide 插槽 */
   sharedVideoSlotRef?: (el: HTMLDivElement | null) => void;
   muted: boolean;

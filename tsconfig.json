@@ -13,12 +13,13 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
+    "rootDir": "./src",
+    "types": ["vite/client"],
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"]

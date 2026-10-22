@@ -1,10 +1,11 @@
 # ---- Stage 1: Build frontend ----
-FROM node:24-slim AS frontend
+FROM node:24.22.1-slim AS frontend
 
 WORKDIR /app
 
 COPY package.json package-lock.json .npmrc ./
-RUN npm ci
+RUN npm install --global "$(node -p "require('./package.json').packageManager")" \
+    && npm ci
 
 COPY tsconfig.json vite.config.ts index.html ./
 COPY scripts/ scripts/
@@ -13,7 +14,7 @@ COPY src/ src/
 RUN npm run build
 
 # ---- Stage 2: Build backend ----
-FROM golang:1.23-bookworm AS backend
+FROM golang:1.27.3-bookworm AS backend
 
 WORKDIR /app/backend
 

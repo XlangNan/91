@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build linux && (amd64 || arm64 || loong64)
+//go:build linux && (amd64 || arm64 || loong64 || ppc64le || s390x || riscv64 || 386 || arm)
 
 package libc // import "modernc.org/libc"
 
@@ -12,10 +12,10 @@ func X__vm_wait(tls *TLS) {}
 //
 // weak_alias(dummy_lockptr, __atexit_lockptr);
 // weak_alias(dummy_lockptr, __bump_lockptr);
-// weak_alias(dummy_lockptr, __sem_open_lockptr);
+//
+// __sem_open_lockptr comes from the transpiled sem_open.c.
 var X__atexit_lockptr int32
 var X__bump_lockptr int32
-var X__sem_open_lockptr int32
 
 // static int dummy(int fd)
 //

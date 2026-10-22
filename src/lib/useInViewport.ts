@@ -28,7 +28,7 @@ function getObserver(): IntersectionObserver {
 }
 
 export function useInViewport(
-  ref: React.RefObject<Element>,
+  ref: React.RefObject<Element | null>,
   enabled = true
 ): boolean {
   const [inView, setInView] = useState(false);

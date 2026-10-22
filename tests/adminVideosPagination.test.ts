@@ -348,7 +348,7 @@ test("video pagination keeps settled results visible while the next page loads",
     Array.from(videosPageSource.matchAll(/const displayedPage = visibleResult\?\.page \?\? null;/g)).length,
     2
   );
-  assert.equal(Array.from(videosPageSource.matchAll(/inert: ""/g)).length, 2);
+  assert.equal(Array.from(videosPageSource.matchAll(/inert=\{listQueryPending\}/g)).length, 2);
   assert.equal(Array.from(videosPageSource.matchAll(/queryKey: activeListQueryKey/g)).length, 2);
   assert.match(adminCss, /\.admin-videos-results\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*14px;/s);
   assert.match(adminCss, /\.admin-videos-results\.is-page-loading \.admin-videos-results__content\s*\{[^}]*opacity:\s*0\.62;[^}]*pointer-events:\s*none;/s);

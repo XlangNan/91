@@ -706,7 +706,7 @@ function CurrentVideosTab({
           className={`admin-videos-results${listQueryPending ? " is-page-loading" : ""}`}
           aria-label="视频列表结果"
           aria-busy={listQueryPending || undefined}
-          {...(listQueryPending ? { inert: "" } : {})}
+          inert={listQueryPending}
         >
           <div
             className="admin-video-card-grid admin-videos-results__content"
@@ -1078,7 +1078,7 @@ function BlacklistTab({
           className={`admin-videos-results${listQueryPending ? " is-page-loading" : ""}`}
           aria-label="拉黑视频列表结果"
           aria-busy={listQueryPending || undefined}
-          {...(listQueryPending ? { inert: "" } : {})}
+          inert={listQueryPending}
         >
           <table className="admin-table admin-table--static-rows admin-blacklist-table admin-videos-results__content">
             <tbody>

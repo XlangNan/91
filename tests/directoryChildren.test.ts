@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import { useDirectoryChildren } from "../src/admin/drive/useDirectoryChildren";
 
 type Props = { driveId: string; parentId: string; open: boolean };
@@ -13,12 +13,12 @@ async function mount(t: TestContext, props = initial) {
     current = useDirectoryChildren(next.driveId, next.parentId, next.open);
     return null;
   }
-  let renderer!: ReturnType<typeof create>;
-  await act(async () => { renderer = create(createElement(Probe, props)); });
+  let renderer!: ReturnType<typeof render>;
+  await act(async () => { renderer = render(createElement(Probe, props)); });
   t.after(async () => { await act(async () => renderer.unmount()); });
   return {
     state: () => current,
-    update: async (next: Props) => { await act(async () => renderer.update(createElement(Probe, next))); },
+    update: async (next: Props) => { await act(async () => renderer.rerender(createElement(Probe, next))); },
     retry: async () => { await act(async () => current.retry()); },
     unmount: async () => { await act(async () => renderer.unmount()); },
   };

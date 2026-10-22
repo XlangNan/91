@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, render } from "./helpers/dom";
 import { MemoryRouter, useNavigate } from "react-router";
 import { useCardPreview } from "../src/lib/useCardPreview.ts";
 import { previewController } from "../src/lib/previewController.ts";
@@ -44,8 +44,8 @@ function previewHarness() {
   }
 
   const tree = () => createElement(MemoryRouter, { initialEntries: ["/video/current"] }, createElement(Harness));
-  let renderer!: ReturnType<typeof create>;
-  act(() => { renderer = create(tree()); });
+  let renderer!: ReturnType<typeof render>;
+  act(() => { renderer = render(tree()); });
   return {
     card: (id: string) => cards.get(id)!,
     media: (id: string) => media.get(id)!,
@@ -59,7 +59,7 @@ function previewHarness() {
       firstActive = options.active ?? firstActive;
       firstInView = options.inView ?? firstInView;
       firstSource = options.src ?? firstSource;
-      act(() => { renderer.update(tree()); });
+      act(() => { renderer.rerender(tree()); });
     },
     navigate: (path: string) => act(() => navigate(path)),
     close: () => act(() => renderer.unmount()),
