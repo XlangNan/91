@@ -2370,15 +2370,15 @@ function bindProgressPreview(
 function mediaErrorMessage(error: MediaError | null) {
   switch (error?.code) {
     case MediaError.MEDIA_ERR_ABORTED:
-      return "视频加载已取消，请重试。";
+      return "视频加载已取消，请重试";
     case MediaError.MEDIA_ERR_NETWORK:
-      return "视频源网络连接失败，请稍后重试。";
+      return "视频源网络连接失败，请稍后重试";
     case MediaError.MEDIA_ERR_DECODE:
-      return "视频编码无法解码，可尝试换用兼容的浏览器。";
+      return "视频编码无法解码，可尝试换用兼容的浏览器";
     case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-      return "浏览器未能加载视频源，可能是网盘连接、地址失效或视频格式问题。";
+      return "浏览器未能加载视频源，可能是网盘连接、地址失效或视频格式问题";
     default:
-      return "视频源暂时无法播放，请重试或复制地址排查。";
+      return "视频源暂时无法播放，请重试或复制地址排查";
   }
 }
 

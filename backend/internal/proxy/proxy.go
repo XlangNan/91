@@ -545,16 +545,16 @@ type streamErrorResponse struct {
 func writeStreamError(w http.ResponseWriter, driveKind string, err error) {
 	code, category := classifyStreamError(err)
 	label := driveLabel(driveKind)
-	message := label + "获取播放地址失败，请稍后重试或联系管理员。"
+	message := label + "获取播放地址失败，请稍后重试或联系管理员"
 	switch category {
 	case "auth":
-		message = label + "登录或授权已失效，请联系管理员重新登录。"
+		message = label + "登录或授权已失效，请联系管理员重新登录"
 	case "rate_limit":
-		message = label + "当前正在限流，请稍后重试。"
+		message = label + "当前正在限流，请稍后重试"
 	case "not_found":
-		message = label + "中的视频文件不存在或已失效，请联系管理员重新扫描。"
+		message = label + "中的视频文件不存在或已失效，请联系管理员重新扫描"
 	case "unavailable":
-		message = label + "上游服务暂时不可用，请稍后重试。"
+		message = label + "上游服务暂时不可用，请稍后重试"
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

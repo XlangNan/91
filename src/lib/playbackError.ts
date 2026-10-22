@@ -51,22 +51,22 @@ export async function diagnosePlaybackSource(
 
     switch (response.status) {
       case 401:
-        return "当前登录状态已失效，请重新登录后播放。";
+        return "当前登录状态已失效，请重新登录后播放";
       case 403:
-        return "当前账号无权访问该视频源。";
+        return "当前账号无权访问该视频源";
       case 404:
       case 410:
         if (sourceURL.pathname.startsWith("/p/share/")) {
-          return "分享播放凭证已失效，请重新打开有效的一次性分享链接。";
+          return "分享播放凭证已失效，请重新打开有效的一次性分享链接";
         }
-        return "视频文件不存在或已失效，请联系管理员重新扫描。";
+        return "视频文件不存在或已失效，请联系管理员重新扫描";
       case 429:
-        return "视频源当前正在限流，请稍后重试。";
+        return "视频源当前正在限流，请稍后重试";
       default:
         if (response.status >= 500) {
-          return `视频源服务暂时不可用（HTTP ${response.status}），请稍后重试或联系管理员。`;
+          return `视频源服务暂时不可用（HTTP ${response.status}），请稍后重试或联系管理员`;
         }
-        return `视频源请求失败（HTTP ${response.status}），请稍后重试。`;
+        return `视频源请求失败（HTTP ${response.status}），请稍后重试`;
     }
   } catch {
     if (options.signal?.aborted) return null;

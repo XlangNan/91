@@ -42,7 +42,7 @@ test("playback diagnostics identify an expired share session", async () => {
 
   assert.equal(
     message,
-    "分享播放凭证已失效，请重新打开有效的一次性分享链接。"
+    "分享播放凭证已失效，请重新打开有效的一次性分享链接"
   );
 });
 
@@ -55,7 +55,7 @@ test("playback diagnostics surface the backend drive error message", async () =>
     return new Response(
       JSON.stringify({
         code: "drive_auth_failed",
-        message: "115 网盘登录或授权已失效，请联系管理员重新登录。",
+        message: "115 网盘登录或授权已失效，请联系管理员重新登录",
       }),
       {
         status: 502,
@@ -71,7 +71,7 @@ test("playback diagnostics surface the backend drive error message", async () =>
 
   assert.equal(
     message,
-    "115 网盘登录或授权已失效，请联系管理员重新登录。"
+    "115 网盘登录或授权已失效，请联系管理员重新登录"
   );
   assert.equal(requestURL, "https://video.example/p/stream/115/file-1");
   assert.equal(requestInit?.redirect, "manual");
@@ -95,7 +95,7 @@ test("playback diagnostics do not mislabel an unstructured 502 as unsupported fo
 
   assert.equal(
     message,
-    "视频源服务暂时不可用（HTTP 502），请稍后重试或联系管理员。"
+    "视频源服务暂时不可用（HTTP 502），请稍后重试或联系管理员"
   );
   assert.doesNotMatch(message || "", /格式不受支持/);
 });

@@ -51,7 +51,7 @@ func TestServeStreamLinkFailureReturnsStructuredErrorAndReportsStatus(t *testing
 	if payload.Code != "drive_auth_failed" {
 		t.Fatalf("code = %q, want drive_auth_failed", payload.Code)
 	}
-	if payload.Message != "115 网盘登录或授权已失效，请联系管理员重新登录。" {
+	if payload.Message != "115 网盘登录或授权已失效，请联系管理员重新登录" {
 		t.Fatalf("message = %q", payload.Message)
 	}
 	if len(updates) != 1 || updates[0].driveID != "115" || updates[0].status != "error" || updates[0].lastError == "" {
@@ -216,7 +216,7 @@ func TestServeStreamUsesProviderFailureClassification(t *testing.T) {
 				if rr.Code != http.StatusBadGateway || payload.Code != tt.code {
 					t.Fatalf("status=%d payload=%+v, want %s", rr.Code, payload, tt.code)
 				}
-				if tt.kind == drives.ProviderErrorUnavailable && payload.Message != "光鸭网盘上游服务暂时不可用，请稍后重试。" {
+				if tt.kind == drives.ProviderErrorUnavailable && payload.Message != "光鸭网盘上游服务暂时不可用，请稍后重试" {
 					t.Fatalf("temporary failure message = %q", payload.Message)
 				}
 			})
