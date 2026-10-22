@@ -61,6 +61,18 @@ type GenerationStreamScanResetter interface {
 	ResetGenerationStreamForScan()
 }
 
+// PlaybackSourceProvider resolves browser playback independently of the original
+// bytes used by downloads and fingerprinting. Returned URLs must authorize the
+// browser without account headers; media is fetched directly by the browser.
+type PlaybackSourceProvider interface {
+	PlaybackLinks(context.Context, string) (*PlaybackLinks, error)
+}
+
+type PlaybackLinks struct {
+	HLS      *StreamLink
+	Original *StreamLink
+}
+
 // Uploader is the optional write capability of a drive. Callers that produce
 // remote files must assert it before starting work instead of discovering an
 // unsupported operation only after preparing a potentially large upload.

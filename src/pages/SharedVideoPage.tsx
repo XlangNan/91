@@ -139,6 +139,7 @@ export default function SharedVideoPage() {
                 <VideoPlayer
                   id={claim.video.id}
                   src={claim.video.videoSrc}
+                  playbackUrl={claim.video.playbackUrl}
                   poster={claim.video.poster}
                   previewSrc={claim.video.previewSrc}
                   loadSubtitles={loadSubtitles}

@@ -519,6 +519,7 @@ function VideoDetailContent({ id }: { id?: string }) {
                   <VideoPlayer
                     id={detail.id}
                     src={detail.videoSrc}
+                    playbackUrl={detail.playbackUrl}
                     preferTypedMp4SourceOnIOS={isPikPakMp4Detail(detail)}
                     poster={detail.poster}
                     previewSrc={detail.previewSrc}

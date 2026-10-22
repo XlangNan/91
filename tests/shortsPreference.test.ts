@@ -283,7 +283,7 @@ test("shorts exposes media failures separately from pause and retries in place",
   );
   assert.doesNotMatch(
     shortsCssSource,
-    /shorts-slide__playback-error-copy|shorts-slide__playback-error-message/
+    /shorts-slide__playback-error-copy/
   );
 
   const retryStart = shortsPageSource.indexOf("function handlePlaybackRetry(");
@@ -572,7 +572,7 @@ test("shorts prepares the next video lightly until the active buffer is healthy"
   );
   assert.match(shortsPageSource, /if \(isActive\) onActiveNeedsPriority\(index\);/);
   assert.match(shortsPageSource, /video\.addEventListener\("progress", handleProgress\);/);
-  assert.match(shortsPageSource, /src=\{shouldLoad \? item\.videoSrc : undefined\}/);
+  assert.match(shortsPageSource, /src=\{shouldLoad && !item\.playbackUrl \? item\.videoSrc : undefined\}/);
   assert.match(shortsPageSource, /video\.removeAttribute\("src"\)/);
   assert.doesNotMatch(shortsPageSource, /src=\{shouldLoad \? item\.previewSrc/);
 });
@@ -888,7 +888,7 @@ test("shorts reuses one persistent media element across iOS slides", () => {
   assert.match(shortsPageSource, /slot\.appendChild\(video\);/);
   assert.match(
     shortsPageSource,
-    /video\.dataset\.shortsVideoId = item\.id;[\s\S]*?video\.src = item\.videoSrc;[\s\S]*?video\.load\(\);/
+    /video\.dataset\.shortsVideoId = item\.id;[\s\S]*?attachVideoSource\(video, item\.videoSrc, item\.playbackUrl\);/
   );
   assert.match(shortsPageSource, /className="shorts-slide__ios-video-slot"/);
   assert.match(shortsPageSource, /sharedVideoRef=\{\s*useIOSSharedVideo \? iosSharedVideoRef : undefined/);
@@ -922,7 +922,7 @@ test("iOS preloads the next video on a standby element and promotes it on swipe"
   );
   assert.match(
     shortsPageSource,
-    /standby\.dataset\.shortsVideoId = nextItem\.id;\s*standby\.poster = nextItem\.poster;\s*standby\.src = nextItem\.videoSrc;\s*standby\.load\(\);/
+    /standby\.dataset\.shortsVideoId = nextItem\.id;\s*standby\.poster = nextItem\.poster;\s*attachVideoSource\(standby, nextItem\.videoSrc, nextItem\.playbackUrl\);/
   );
   // The standby parks inside the next slide's slot, so landing there is a pure
   // ref swap with no DOM move and no src reset.
@@ -1340,7 +1340,7 @@ test("shorts sizes the preload gate by bitrate, not by a fixed second count", ()
   );
   assert.match(
     shortsFeedGoSource,
-    /VideoSrc:\s+videoSrc,\s*Poster:[\s\S]*?SizeBytes:\s+sizeBytes,\s*DurationSeconds:\s+durationSeconds,/
+    /VideoSrc:\s+videoSrc,\s*PlaybackURL:\s+playbackURL\(video.ID\),\s*Poster:[\s\S]*?SizeBytes:\s+sizeBytes,\s*DurationSeconds:\s+durationSeconds,/
   );
   assert.match(videosDataSource, /sizeBytes\?: number;\s*durationSeconds\?: number;/);
 

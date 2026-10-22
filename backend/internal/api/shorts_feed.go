@@ -42,6 +42,7 @@ var shortsLinkPrewarmSlots = make(chan struct{}, 4)
 type ShortsItemDTO struct {
 	VideoDTO
 	VideoSrc         string `json:"videoSrc"`
+	PlaybackURL      string `json:"playbackUrl,omitempty"`
 	Poster           string `json:"poster"`
 	BackgroundPoster string `json:"backgroundPoster,omitempty"`
 	SizeBytes        int64  `json:"sizeBytes,omitempty"`
@@ -190,6 +191,9 @@ func (s *Server) prewarmShortsStreamLinks(videos []*catalog.Video, requestHeader
 	for _, video := range videos {
 		driveID, fileID, ok := videoStreamTarget(video)
 		if !ok {
+			continue
+		}
+		if s.Proxy.HasPlaybackProvider(driveID) {
 			continue
 		}
 		select {
@@ -410,6 +414,10 @@ func (s *Server) mapShortsItems(
 		dto := mapVideo(video)
 		videoSrc, sizeBytes := s.videoSourceAndSize(video)
 		durationSeconds := video.DurationSeconds
+		if s.Proxy != nil && s.Proxy.HasPlaybackProvider(video.DriveID) {
+			// Provider HLS may be re-encoded; original size is not its bitrate.
+			sizeBytes, durationSeconds = 0, 0
+		}
 		// 大小与时长必须成对出现。任一缺失时把两者都省略，让前端明确
 		// 识别为"码率未知"，而不是收到一半可用的元数据。
 		if sizeBytes <= 0 || durationSeconds <= 0 {
@@ -431,6 +439,7 @@ func (s *Server) mapShortsItems(
 		out = append(out, ShortsItemDTO{
 			VideoDTO:         dto,
 			VideoSrc:         videoSrc,
+			PlaybackURL:      playbackURL(video.ID),
 			Poster:           poster,
 			BackgroundPoster: shortsBackgroundPosterURL(poster),
 			SizeBytes:        sizeBytes,

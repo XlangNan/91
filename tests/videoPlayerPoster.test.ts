@@ -553,10 +553,10 @@ test("detail player keeps only native fullscreen on Apple devices", () => {
   assert.match(playerSource, /\/iPhone\|iPad\|iPod\|Macintosh\/i\.test\(navigator\.userAgent\)/);
 });
 
-test("detail player treats backend video routes as native mp4 sources", () => {
-  assert.match(playerSource, /if \(isBackendNativeVideoRoute\(cleanPath\)\) return "mp4"/);
-  assert.match(playerSource, /pathname\.startsWith\("\/p\/stream\/"\)/);
-  assert.match(playerSource, /pathname\.startsWith\("\/p\/upload\/"\)/);
+test("detail player resolves typed sources rather than guessing MP4 from backend routes", () => {
+  assert.doesNotMatch(playerSource, /isBackendNativeVideoRoute/);
+  assert.match(playerSource, /playbackUrl \? "resolved-source"/);
+  assert.match(playerSource, /attachVideoSource\(video, src, playbackUrl/);
   assert.doesNotMatch(playerSource, /\/p\/spider91\//);
   assert.doesNotMatch(playerSource, /crossOrigin/);
 });

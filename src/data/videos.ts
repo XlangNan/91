@@ -686,6 +686,7 @@ export async function fetchUploadTags(): Promise<TagItem[]> {
 /** 短视频模式单条记录。比 VideoItem 多 videoSrc / poster。 */
 export type ShortsItem = VideoItem & {
   videoSrc: string;
+  playbackUrl?: string;
   poster: string;
   /** Tiny server-preblurred texture for the viewport-sized letterbox backdrop. */
   backgroundPoster?: string;

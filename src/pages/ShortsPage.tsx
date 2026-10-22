@@ -22,6 +22,15 @@ import {
 } from "lucide-react";
 import { hideVideo, setVideoLike, type ShortsItem } from "@/data/videos";
 import {
+  attachVideoSource,
+  disposeVideoSource,
+  playbackSourceError,
+  PLAYBACK_SOURCE_ERROR,
+  PLAYBACK_SOURCE_READY,
+  retryVideoSource,
+  videoSourceLoading,
+} from "@/lib/videoSource";
+import {
   averageBytesPerSecond,
   clamp,
   FIRST_FRAME_WARM_TIME,
@@ -982,8 +991,7 @@ function ShortsPlayback({
       }
       video.dataset.shortsVideoId = item.id;
       video.poster = item.poster;
-      video.src = item.videoSrc;
-      video.load();
+      attachVideoSource(video, item.videoSrc, item.playbackUrl);
     } else if (video.getAttribute("poster") !== item.poster) {
       video.poster = item.poster;
     }
@@ -1036,8 +1044,7 @@ function ShortsPlayback({
     }
     standby.dataset.shortsVideoId = nextItem.id;
     standby.poster = nextItem.poster;
-    standby.src = nextItem.videoSrc;
-    standby.load();
+    attachVideoSource(standby, nextItem.videoSrc, nextItem.playbackUrl);
     // 光把字节拉下来还是一张静态图：video 在真正播放前一直画 poster。
     // 拿到元数据后 seek 一次逼它解码首帧，滑到位就直接有画面。
     warmStandbyFirstFrame(standby);
@@ -1319,6 +1326,7 @@ function ShortsPlayback({
             const shouldPreload =
               !useIOSSharedVideo &&
               preloadOffset > 0 &&
+              (!item.playbackUrl || preloadOffset === 1) &&
               preloadOffset <= getPreloadAheadCount(activeReadyForPreload);
             const shouldMount =
               isActiveSlide ||
@@ -1615,6 +1623,7 @@ function ShortsSlideImpl({
 }: SlideProps) {
   const slideRef = useRef<HTMLElement | null>(null);
   const localRef = useRef<HTMLVideoElement | null>(null);
+  const ownedVideoRef = useRef<HTMLVideoElement | null>(null);
   const keyboardLikeHandlerRef = useRef<() => void>(() => undefined);
   const isActiveRef = useRef(isActive);
   const shouldLoadRef = useRef(shouldLoad);
@@ -1645,6 +1654,7 @@ function ShortsSlideImpl({
   const [paused, setPaused] = useState(false);
   const [playbackFailure, setPlaybackFailure] =
     useState<ShortsPlaybackFailure | null>(null);
+  const [sourceMessage, setSourceMessage] = useState<string | null>(null);
   const [fastActive, setFastActive] = useState(false);
   // 只改变内部播放器尺寸；外层 slide 的一屏高度仍由翻页器管理。
   const [mediaAspectRatio, setMediaAspectRatio] = useState(9 / 16);
@@ -1915,12 +1925,46 @@ function ShortsSlideImpl({
       const previous = localRef.current;
       if (!el && previous && !shouldMountRef.current) {
         releaseVideoSource(previous);
+        ownedVideoRef.current = null;
       }
       localRef.current = el;
+      if (el) ownedVideoRef.current = el;
       videoRef(el);
     },
     [videoRef]
   );
+
+  // Index changes can replace a callback ref without removing its DOM node.
+  // Keep buffered playback in that case, but always dispose on real unmount.
+  useEffect(() => () => {
+    if (ownedVideoRef.current) releaseVideoSource(ownedVideoRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (usesSharedVideo || !shouldLoad || !shouldMount || !item.playbackUrl) return;
+    const video = localRef.current;
+    if (video) attachVideoSource(video, item.videoSrc, item.playbackUrl);
+  }, [item.id, item.videoSrc, item.playbackUrl, shouldLoad, shouldMount, usesSharedVideo]);
+
+  useEffect(() => {
+    if (!isActive || !shouldLoad) return;
+    const video = getVideoElement();
+    if (!video) return;
+    const handleSourceFailure = () => {
+      const message = playbackSourceError(video);
+      if (!message) return;
+      setSourceMessage(message);
+      exposePlaybackFailure("media-error");
+    };
+    const handleSourceReady = () => setSourceMessage(null);
+    video.addEventListener(PLAYBACK_SOURCE_ERROR, handleSourceFailure);
+    video.addEventListener(PLAYBACK_SOURCE_READY, handleSourceReady);
+    handleSourceFailure();
+    return () => {
+      video.removeEventListener(PLAYBACK_SOURCE_ERROR, handleSourceFailure);
+      video.removeEventListener(PLAYBACK_SOURCE_READY, handleSourceReady);
+    };
+  }, [getVideoElement, isActive, shouldLoad, item.id, exposePlaybackFailure]);
 
   // 非当前屏/后续预加载/视频窗口内缓存视频不保留媒体源，确保离开窗口后浏览器中止原始网盘流。
   useEffect(() => {
@@ -1982,11 +2026,13 @@ function ShortsSlideImpl({
 
     const markPlayFailed = () => {
       if (!canContinue()) return;
+      if (videoSourceLoading(video)) return;
       exposePlaybackFailure("play-rejected");
     };
 
     const attemptPlay = () => {
       if (!canContinue() || !video.paused) return;
+      if (videoSourceLoading(video) || playbackSourceError(video)) return;
       video.playsInline = true;
 
       setPaused(false);
@@ -2018,6 +2064,7 @@ function ShortsSlideImpl({
     };
 
     video.addEventListener("loadeddata", retryWhenReady);
+    video.addEventListener(PLAYBACK_SOURCE_READY, retryWhenReady);
     video.addEventListener("canplay", retryWhenReady);
     if (isVideoPausedByUser(index)) {
       video.pause();
@@ -2034,6 +2081,7 @@ function ShortsSlideImpl({
       disposed = true;
       if (retryTimer !== null) window.clearTimeout(retryTimer);
       video.removeEventListener("loadeddata", retryWhenReady);
+      video.removeEventListener(PLAYBACK_SOURCE_READY, retryWhenReady);
       video.removeEventListener("canplay", retryWhenReady);
     };
   }, [
@@ -2134,7 +2182,7 @@ function ShortsSlideImpl({
         try {
           video.pause();
           // 保留 src 和同一个 DOM 节点，只重建 WebKit 内部播放管线。
-          video.load();
+          if (!retryVideoSource(video)) video.load();
         } catch {
           failRestart(attempt);
           return;
@@ -2511,6 +2559,7 @@ function ShortsSlideImpl({
       if (!belongsToSlide()) return;
       if (usesSharedVideo && !video.error) return;
       if (!isActive) return;
+      if (videoSourceLoading(video)) return;
       if (usesSharedVideo) resetLoopRestartState();
       exposePlaybackFailure("media-error");
     };
@@ -2792,6 +2841,7 @@ function ShortsSlideImpl({
     error: unknown
   ) {
     if (getVideoElement() !== video || !isActiveRef.current) return;
+    if (videoSourceLoading(video)) return;
     if (getMediaErrorName(error) === "NotAllowedError") {
       setPlaybackFailure(null);
       setPaused(true);
@@ -2812,6 +2862,7 @@ function ShortsSlideImpl({
     playbackMotionFrameCountRef.current = 0;
     onUserPausedChange(index, false);
     setPlaybackFailure(null);
+    setSourceMessage(null);
     setPaused(false);
     setFastActive(false);
     normalizeVideoPlaybackRate(video);
@@ -2822,7 +2873,7 @@ function ShortsSlideImpl({
     try {
       // 复用当前 media element，只重建已经失败的媒体管线。iOS 上不能替换
       // 节点，否则会丢失用户授予这个元素的有声播放权限。
-      video.load();
+      if (!retryVideoSource(video)) video.load();
       video
         .play()
         .catch((error: unknown) => handleUserPlayFailure(video, error));
@@ -3081,7 +3132,7 @@ function ShortsSlideImpl({
                 <video
                   ref={setRef}
                   className="shorts-slide__video"
-                  src={shouldLoad ? item.videoSrc : undefined}
+                  src={shouldLoad && !item.playbackUrl ? item.videoSrc : undefined}
                   poster={item.poster}
                   preload={shouldLoad ? (shouldEagerLoad ? "auto" : "metadata") : "none"}
                   autoPlay={isActive}
@@ -3149,6 +3200,7 @@ function ShortsSlideImpl({
                 >
                   <AlertCircle size={28} aria-hidden="true" />
                   <div className="shorts-slide__playback-error-title">播放失败</div>
+                  {sourceMessage && <div className="shorts-slide__playback-error-message">{sourceMessage}</div>}
                   <button
                     type="button"
                     className="shorts-slide__playback-retry"
@@ -3459,6 +3511,7 @@ function unlockVideoAudioPlayback(video: HTMLVideoElement) {
 }
 
 function releaseVideoSource(video: HTMLVideoElement) {
+  disposeVideoSource(video);
   try {
     video.pause();
     video.removeAttribute("src");

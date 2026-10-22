@@ -597,6 +597,12 @@ html.shorts-document-scroll.is-pager-driven body {
   font-weight: 700;
 }
 
+.shorts-slide__playback-error-message {
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .shorts-slide__playback-retry {
   min-height: 40px;
   padding: 0 16px;

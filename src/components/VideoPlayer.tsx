@@ -6,12 +6,18 @@ import {
   type MutableRefObject,
 } from "react";
 import Artplayer, { type Option, type SettingOption } from "artplayer";
-import type Hls from "hls.js";
 import {
   calculateFullscreenSubtitleBottom,
   getFullscreenPlayerOrientation,
 } from "@/lib/fullscreenSubtitleLayout";
 import { diagnosePlaybackSource } from "@/lib/playbackError";
+import {
+  attachVideoSource,
+  disposeVideoSource,
+  PLAYBACK_SOURCE_ERROR,
+  playbackSourceError,
+  playbackSourceURL,
+} from "@/lib/videoSource";
 import {
   getPlayerGesturePoint,
   setPlayerGestureVolume,
@@ -35,6 +41,7 @@ import type { VideoSubtitle } from "@/types";
 type Props = {
   id?: string;
   src: string;
+  playbackUrl?: string;
   /**
    * 仅由普通详情页对已确认的 PikPak MP4 开启。运行时仍会限制为
    * iOS/iPadOS；分享页及短视频页不传此参数。
@@ -73,10 +80,6 @@ type PlayerSettings = {
   playbackRate: number;
   brightness: number;
   loop: boolean;
-};
-
-type VideoElementWithHls = HTMLVideoElement & {
-  __hls?: Hls | null;
 };
 
 type MobileGestureMode = "seek" | "volume" | "brightness";
@@ -205,6 +208,7 @@ const tripleScreenBindings = new WeakMap<
 
 export function VideoPlayer({
   src,
+  playbackUrl,
   preferTypedMp4SourceOnIOS = false,
   poster,
   previewSrc,
@@ -243,6 +247,8 @@ export function VideoPlayer({
     const cleanupPlayer = mountArtPlayer({
       mount,
       src,
+      playbackUrl,
+      refreshSource: retryNonce > 0,
       preferTypedMp4SourceOnIOS,
       poster,
       title,
@@ -257,7 +263,7 @@ export function VideoPlayer({
     });
 
     return cleanupPlayer;
-  }, [poster, preferTypedMp4SourceOnIOS, retryNonce, src, title]);
+  }, [poster, preferTypedMp4SourceOnIOS, retryNonce, src, playbackUrl, title]);
 
   useEffect(() => {
     return () => {
@@ -289,7 +295,7 @@ export function VideoPlayer({
   }
 
   async function copySource() {
-    const absolute = new URL(src, window.location.href).href;
+    const absolute = new URL((artRef.current && playbackSourceURL(artRef.current.video)) || src, window.location.href).href;
     try {
       await navigator.clipboard.writeText(absolute);
       showGestureHud("播放地址已复制", 900);
@@ -361,33 +367,14 @@ function inferSourceType(src: string) {
   const lower = src.toLowerCase();
   const cleanPath = lower.split("#")[0].split("?")[0];
   if (cleanPath.endsWith(".m3u8") || lower.includes(".m3u8")) return "m3u8";
-  if (isBackendNativeVideoRoute(cleanPath)) return "mp4";
   return undefined;
-}
-
-function isBackendNativeVideoRoute(cleanPath: string) {
-  const pathname = sourcePathname(cleanPath);
-  return (
-    pathname.startsWith("/p/stream/") ||
-    pathname.startsWith("/p/upload/") ||
-    pathname.startsWith("/p/share/")
-  );
-}
-
-function sourcePathname(src: string) {
-  if (src.startsWith("http://") || src.startsWith("https://")) {
-    try {
-      return new URL(src).pathname.toLowerCase();
-    } catch {
-      return src;
-    }
-  }
-  return src;
 }
 
 function mountArtPlayer({
   mount,
   src,
+  playbackUrl,
+  refreshSource,
   preferTypedMp4SourceOnIOS,
   poster,
   loadSubtitlesRef,
@@ -402,6 +389,8 @@ function mountArtPlayer({
 }: {
   mount: HTMLDivElement;
   src: string;
+  playbackUrl?: string;
+  refreshSource: boolean;
   preferTypedMp4SourceOnIOS: boolean;
   poster: string;
   loadSubtitlesRef: MutableRefObject<Props["loadSubtitles"]>;
@@ -416,12 +405,12 @@ function mountArtPlayer({
 }) {
   const useTypedMp4Source =
     preferTypedMp4SourceOnIOS && isIOSPlaybackDevice();
-  const sourceType = useTypedMp4Source
+  const sourceType = playbackUrl ? "resolved-source" : useTypedMp4Source
     ? TYPED_MP4_SOURCE_TYPE
     : inferSourceType(src);
   const subtitleState: SubtitleLoadState = { status: "idle", subtitles: [] };
   const fastActiveRef = { current: false };
-  const loadHlsSource = createHlsSourceLoader(onError);
+  const loadHlsSource = createHlsSourceLoader();
   const enableOrientationControl = shouldEnableMobileOrientationControl();
   const enableTripleScreenControl = shouldEnableTripleScreenControl();
   const enableWebFullscreen = shouldEnableWebFullscreen(enableOrientationControl);
@@ -462,6 +451,12 @@ function mountArtPlayer({
     fastForward: false,
     airplay: true,
     customType: {
+      "resolved-source": (video) => {
+        attachVideoSource(video, src, playbackUrl, {
+          refresh: refreshSource,
+          loadNative: useTypedMp4Source ? (url) => loadTypedMp4Source(video, url, art) : undefined,
+        });
+      },
       hls: loadHlsSource,
       m3u8: loadHlsSource,
       [TYPED_MP4_SOURCE_TYPE]: loadTypedMp4Source,
@@ -488,7 +483,7 @@ function mountArtPlayer({
   artRef.current = art;
   art.template.$player.classList.add(PLAYER_SURFACE_CLASS);
 
-  const video = art.video as VideoElementWithHls;
+  const video = art.video;
   disablePlayerVolumePersistence(art.storage);
   // ArtPlayer may have restored a cached volume during its constructor.
   video.volume = DEFAULT_SETTINGS.volume;
@@ -563,6 +558,7 @@ function mountArtPlayer({
   }
 
   function handleVideoError() {
+    if (playbackUrl) return;
     playbackErrorActive = true;
     const fallbackMessage = mediaErrorMessage(video.error);
     onError({
@@ -581,6 +577,11 @@ function mountArtPlayer({
         onError({ title: "视频源加载失败", message });
       }
     });
+  }
+
+  function handleSourceError() {
+    const message = playbackSourceError(video);
+    if (message) onError({ title: "视频源暂不可用", message });
   }
 
   function clearPlaybackDiagnostic() {
@@ -633,6 +634,7 @@ function mountArtPlayer({
   mount.addEventListener("contextmenu", preventContextMenu);
 
   art.on("video:loadstart", handleLoadStart);
+  video.addEventListener(PLAYBACK_SOURCE_ERROR, handleSourceError);
   art.on("video:loadeddata", handleReady);
   art.on("video:canplay", handleReady);
   art.on("video:playing", handleReady);
@@ -643,7 +645,7 @@ function mountArtPlayer({
   art.on("video:ended", resetFastRate);
   // 所有基于媒体生命周期的监听都挂好后再设置真实地址，避免本地缓存
   // 极快返回 metadata 时错过方向识别或错误恢复事件。
-  if (useTypedMp4Source) {
+  if (useTypedMp4Source && !playbackUrl) {
     // ArtPlayer 的 url getter 读取父级 video.src；使用子 <source> 时它为空。
     // 主动保存 option.url，确保 ArtPlayer 内置的失败重连仍使用真实地址。
     art.option.url = src;
@@ -654,6 +656,8 @@ function mountArtPlayer({
 
   return () => {
     disposed = true;
+    video.removeEventListener(PLAYBACK_SOURCE_ERROR, handleSourceError);
+    disposeVideoSource(video);
     clearPlaybackDiagnostic();
     // ArtPlayer 的网页全屏会把播放器节点临时移动到 document.body。
     // 路由回退时必须先退出网页全屏，把节点移回 mount，再执行 destroy；
@@ -671,7 +675,6 @@ function mountArtPlayer({
     unbindOrientationToggle();
     setPlayerFastRateHint(art, false);
     mount.removeEventListener("contextmenu", preventContextMenu);
-    destroyHls(video);
     if (useTypedMp4Source) clearTypedMp4Source(video);
     art.off("video:loadstart", handleLoadStart);
     art.off("video:loadeddata", handleReady);
@@ -710,6 +713,7 @@ function loadTypedMp4Source(
       // 转成 ArtPlayer 的媒体错误，沿用现有重试和诊断界面。
       if (!art.isDestroy && source.isConnected) {
         art.emit("video:error", event);
+        video.dispatchEvent(new Event("error"));
       }
     },
     { once: true }
@@ -1991,96 +1995,8 @@ function formatBrightnessPercent(brightness: number) {
   return formatPercent(normalized);
 }
 
-function createHlsSourceLoader(
-  onError: (error: PlayerError | null) => void
-) {
-  return function loadHlsSource(
-    video: HTMLVideoElement,
-    url: string,
-    art: Artplayer
-  ) {
-    const target = video as VideoElementWithHls;
-    destroyHls(target);
-    onError(null);
-
-    void import("hls.js/light")
-      .then((hlsModule) => {
-        if (art.isDestroy || !video.isConnected) return;
-        loadHlsSourceWith(video, url, art, hlsModule.default, onError);
-      })
-      .catch(() => {
-        if (art.isDestroy) return;
-        onError({
-          title: "HLS 内核加载失败",
-          message: "播放器组件加载失败，请刷新页面后重试。",
-        });
-      });
-  };
-}
-
-function loadHlsSourceWith(
-  video: HTMLVideoElement,
-  url: string,
-  art: Artplayer,
-  HlsCtor: typeof Hls,
-  onError: (error: PlayerError | null) => void
-) {
-  const target = video as VideoElementWithHls;
-  destroyHls(target);
-
-  if (HlsCtor.isSupported()) {
-    const hls = new HlsCtor({
-      enableWorker: true,
-      lowLatencyMode: true,
-      backBufferLength: 90,
-    });
-
-    target.__hls = hls;
-    art.hls = hls;
-    hls.loadSource(url);
-    hls.attachMedia(video);
-    hls.on(HlsCtor.Events.ERROR, (_event, data) => {
-      if (!data.fatal) return;
-
-      if (data.type === HlsCtor.ErrorTypes.NETWORK_ERROR) {
-        art.notice.show = "网络错误，正在重试";
-        hls.startLoad();
-        return;
-      }
-
-      if (data.type === HlsCtor.ErrorTypes.MEDIA_ERROR) {
-        art.notice.show = "媒体错误，正在恢复";
-        hls.recoverMediaError();
-        return;
-      }
-
-      destroyHls(target);
-      onError({
-        title: "HLS 播放失败",
-        message: "当前视频流无法解析，请稍后重试或复制播放地址排查。",
-      });
-    });
-    return;
-  }
-
-  if (
-    video.canPlayType("application/vnd.apple.mpegurl") ||
-    video.canPlayType("application/x-mpegURL")
-  ) {
-    video.src = url;
-    return;
-  }
-
-  onError({
-    title: "当前浏览器不支持 HLS",
-    message: "请换用新版 Chrome、Edge 或 Safari 后再试。",
-  });
-}
-
-function destroyHls(video: VideoElementWithHls) {
-  if (!video.__hls) return;
-  video.__hls.destroy();
-  video.__hls = null;
+function createHlsSourceLoader() {
+  return (video: HTMLVideoElement, url: string) => attachVideoSource(video, url);
 }
 
 function bindLongPressFast(

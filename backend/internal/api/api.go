@@ -176,6 +176,7 @@ type TagDTO struct {
 type VideoDetailDTO struct {
 	VideoDTO
 	VideoSrc            string        `json:"videoSrc"`
+	PlaybackURL         string        `json:"playbackUrl,omitempty"`
 	MediaType           string        `json:"mediaType,omitempty"`
 	Poster              string        `json:"poster"`
 	EmbedURL            string        `json:"embedUrl"`
@@ -246,6 +247,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 	// HttpOnly 分享会话，并且只能访问该分享绑定的单个视频。
 	r.Post("/api/share/consume", s.handleConsumeVideoShare)
 	r.Get("/api/share/{shareID}/subtitles", s.handleSharedVideoSubtitles)
+	r.Get("/api/share/{shareID}/playback", s.handleSharedVideoPlayback)
 	r.Post("/api/share/{shareID}/view", s.handleSharedVideoView)
 	r.Get("/p/share/{shareID}/stream", s.handleSharedVideoStream)
 	r.Get("/p/share/{shareID}/preview", s.handleSharedVideoPreview)
@@ -259,6 +261,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Get("/api/list", s.handleList)
 		r.Get("/api/feed", s.handleVideoFeed)
 		r.Get("/api/video/{id}", s.handleVideoDetail)
+		r.Get("/api/video/{id}/playback", s.handleVideoPlayback)
 		r.Get("/api/video/{id}/recommendations", s.handleVideoRecommendations)
 		r.Get("/api/video/{id}/collection/summary", s.handleVideoCollectionSummary)
 		r.Get("/api/video/{id}/collection", s.handleVideoCollection)
@@ -440,11 +443,12 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 	dto.SourceLabel = s.videoSourceLabel(r.Context(), v)
 
 	detail := VideoDetailDTO{
-		VideoDTO:  dto,
-		VideoSrc:  s.videoSource(v),
-		MediaType: playbackMediaType(v),
-		Poster:    thumbnailURL(v),
-		EmbedURL:  fmt.Sprintf(`<iframe src="/embed/%s" width="640" height="360" frameborder="0" allowfullscreen></iframe>`, pathSegment(v.ID)),
+		VideoDTO:    dto,
+		VideoSrc:    s.videoSource(v),
+		PlaybackURL: playbackURL(v.ID),
+		MediaType:   playbackMediaType(v),
+		Poster:      thumbnailURL(v),
+		EmbedURL:    fmt.Sprintf(`<iframe src="/embed/%s" width="640" height="360" frameborder="0" allowfullscreen></iframe>`, pathSegment(v.ID)),
 		AuthorProfile: AuthorProfile{
 			ID:     "author-" + v.Author,
 			Name:   v.Author,

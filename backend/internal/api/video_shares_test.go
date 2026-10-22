@@ -118,6 +118,26 @@ func TestOneTimeShareRouteClaimsOnceAndStreamsWithoutLogin(t *testing.T) {
 		t.Fatalf("shared video src = %q, want %q", consumed.Video.VideoSrc, wantStream)
 	}
 	shareCookie := responseCookieByName(t, consumeRR, videoShareCookieName)
+	for _, authorized := range []bool{false, true} {
+		req := httptest.NewRequest(http.MethodGet, consumed.Video.PlaybackURL, nil)
+		if authorized {
+			req.AddCookie(shareCookie)
+		}
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if !authorized && rr.Code != http.StatusNotFound {
+			t.Fatalf("unclaimed playback status = %d", rr.Code)
+		}
+		if authorized {
+			var source PlaybackSourceDTO
+			if err := json.Unmarshal(rr.Body.Bytes(), &source); err != nil {
+				t.Fatal(err)
+			}
+			if rr.Code != http.StatusOK || source.URL != wantStream {
+				t.Fatalf("share playback = %d %+v", rr.Code, source)
+			}
+		}
+	}
 	if !shareCookie.HttpOnly || shareCookie.MaxAge != int(videoShareSessionTTL.Seconds()) {
 		t.Fatalf("share cookie = %#v", shareCookie)
 	}

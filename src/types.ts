@@ -63,6 +63,7 @@ export type VideoCollection = VideoCollectionSummary & {
 
 export type VideoDetail = VideoItem & {
   videoSrc: string;
+  playbackUrl?: string;
   /** 实际交给浏览器播放的资源 MIME；后端无法确认时省略。 */
   mediaType?: string;
   poster: string;

@@ -303,9 +303,10 @@ func (s *Server) mapSharedVideoDetail(ctx context.Context, v *catalog.Video, sha
 	dto.PreviewSrc = sharedAssetURL(shareID, "preview", v.PreviewUpdatedAt)
 	dto.SourceLabel = s.videoSourceLabel(ctx, v)
 	return VideoDetailDTO{
-		VideoDTO: dto,
-		VideoSrc: sharedAssetURL(shareID, "stream", time.Time{}),
-		Poster:   dto.Thumbnail,
+		VideoDTO:    dto,
+		VideoSrc:    sharedAssetURL(shareID, "stream", time.Time{}),
+		PlaybackURL: "/api/share/" + pathSegment(shareID) + "/playback",
+		Poster:      dto.Thumbnail,
 		AuthorProfile: AuthorProfile{
 			ID:     "author-" + v.Author,
 			Name:   v.Author,
