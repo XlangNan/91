@@ -536,7 +536,7 @@ export function createBackupReceiveToken() {
 
 export type AdminDrive = {
   id: string;
-  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "yun139" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
   name: string;
   rootId: string;
   status: string;
@@ -659,7 +659,7 @@ export function subscribeDriveSnapshots(id: string, onSnapshot: (snapshot: Drive
 
 export type UpsertDriveInput = {
   id: string;
-  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "yun139" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
   name: string;
   rootId: string;
   credentials: Record<string, string>;
@@ -986,6 +986,31 @@ export function getP123QRStatus(uniID: string, loginUuid: string) {
   return request<P123QRStatus>(
     `/drives/p123/qr/${encodeURIComponent(uniID)}?${qs.toString()}`
   );
+}
+
+export type Yun139QRSession = {
+  sessionId: string;
+  qrCodeUrl: string;
+  qrImageDataUrl: string;
+  expiresAt: string;
+};
+
+export type Yun139QRStatus = {
+  state: "waiting" | "scanned" | "success" | "expired" | "canceled" | "error";
+  statusText: string;
+  authorization?: string;
+};
+
+export function startYun139QRLogin(signal?: AbortSignal) {
+  return request<Yun139QRSession>("/drives/yun139/qr", { method: "POST", signal });
+}
+
+export function getYun139QRStatus(sessionId: string, signal?: AbortSignal) {
+  return request<Yun139QRStatus>("/drives/yun139/qr/status", {
+    method: "POST",
+    signal,
+    body: JSON.stringify({ sessionId }),
+  });
 }
 
 export type WopanQRSession = {

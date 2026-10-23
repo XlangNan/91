@@ -27,6 +27,7 @@ var routineQueryLogRoutes = map[string]struct{}{
 	"GET /admin/api/drives/{id}/dirtree":            {},
 	"POST /admin/api/drives/quark/qr/status":        {},
 	"POST /admin/api/drives/p115/qr/status":         {},
+	"POST /admin/api/drives/yun139/qr/status":       {},
 	"GET /admin/api/drives/p123/qr/{uniID}":         {},
 	"GET /admin/api/drives/wopan/qr/{uuid}":         {},
 	"GET /admin/api/drives/guangyapan/qr/status":    {},

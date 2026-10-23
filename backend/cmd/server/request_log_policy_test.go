@@ -31,6 +31,7 @@ func TestRequestLogPolicyFiltersBothOutputs(t *testing.T) {
 		{name: "import list query", method: "GET", target: "/admin/api/import-jobs?source=telegram", status: 200},
 		{name: "backup list query", method: "GET", target: "/admin/api/backups", status: 200},
 		{name: "POST scan status query", method: "POST", target: "/admin/api/drives/quark/qr/status", status: 200},
+		{name: "mobile QR status query", method: "POST", target: "/admin/api/drives/yun139/qr/status", status: 200},
 		{name: "viewer query", method: "GET", target: "/admin/api/logs?q=error", status: 200},
 		{name: "query below slow threshold", method: "GET", target: "/admin/api/drives", status: 200, elapsed: time.Second - time.Nanosecond},
 		{name: "slow query", method: "GET", target: "/admin/api/drives", status: 200, elapsed: time.Second, level: applog.LevelWarning},

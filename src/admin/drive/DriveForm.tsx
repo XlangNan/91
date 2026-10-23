@@ -5,6 +5,7 @@ import { QuarkQRCodeLogin } from "./QuarkQRCodeLogin";
 import { P115QRCodeLogin } from "./P115QRCodeLogin";
 import { P123QRCodeLogin } from "./P123QRCodeLogin";
 import { WopanQRCodeLogin } from "./WopanQRCodeLogin";
+import { Yun139QRCodeLogin } from "./Yun139QRCodeLogin";
 import { GuangYaPanQRCodeLogin } from "./GuangYaPanQRCodeLogin";
 import {
   FormState,
@@ -32,6 +33,7 @@ const DRIVE_OPTIONS: DriveOption[] = [
   { kind: "googledrive", label: "Google Drive", abbr: "GD" },
   { kind: "quark", label: "夸克网盘", abbr: "Qk" },
   { kind: "wopan", label: "联通网盘", abbr: "Wo" },
+  { kind: "yun139", label: "移动网盘", abbr: "139" },
   { kind: "webdav", label: "WebDAV", abbr: "WD" },
   { kind: "localstorage", label: "本地存储", abbr: "Lo" },
 ];
@@ -226,6 +228,10 @@ export function DriveForm({
                 })
               }
             />
+          )}
+
+          {form.kind === "yun139" && (
+            <Yun139QRCodeLogin onAuthorization={(authorization) => setCred("authorization", authorization)} />
           )}
 
           {form.kind === "guangyapan" && (

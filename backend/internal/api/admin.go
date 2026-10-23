@@ -14,6 +14,7 @@ import (
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/config"
 	"github.com/video-site/backend/internal/drives/quark"
+	"github.com/video-site/backend/internal/drives/yun139"
 	"github.com/video-site/backend/internal/driveview"
 	"github.com/video-site/backend/internal/mediaimport"
 	"github.com/video-site/backend/internal/preview"
@@ -138,6 +139,10 @@ type AdminServer struct {
 	QuarkQRHTTPClient *http.Client
 	quarkQRMu         sync.Mutex
 	quarkQRClient     *quark.QRClient
+	// 移动网盘扫码会话保留在同一个客户端中，直到成功、取消或过期。
+	Yun139QRHTTPClient *http.Client
+	yun139QRMu         sync.Mutex
+	yun139QRClient     *yun139.QRClient
 	// 联通网盘扫码登录接口测试注入；生产留空走官方 panservice.mail.wo.cn。
 	WopanQRAPIBaseURL string
 	WopanQRHTTPClient *http.Client
@@ -251,6 +256,8 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Post("/drives/quark/qr/status", a.handleQuarkQRStatus)
 			r.Post("/drives/p115/qr", a.handleP115QRStart)
 			r.Post("/drives/p115/qr/status", a.handleP115QRStatus)
+			r.Post("/drives/yun139/qr", a.handleYun139QRStart)
+			r.Post("/drives/yun139/qr/status", a.handleYun139QRStatus)
 			r.Post("/drives/p123/qr", a.handleP123QRStart)
 			r.Get("/drives/p123/qr/{uniID}", a.handleP123QRStatus)
 			r.Post("/drives/wopan/qr", a.handleWopanQRStart)

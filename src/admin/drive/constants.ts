@@ -8,13 +8,14 @@ import pikpakIcon from "./icons/pikpak.png";
 import quarkIcon from "./icons/quark.png";
 import webdavIcon from "./icons/webdav.png";
 import wopanIcon from "./icons/wopan.png";
+import yun139Icon from "./icons/yun139.png";
 import {
   ONEDRIVE_AUTH_MODE_CUSTOM_APP,
   ONEDRIVE_AUTH_MODE_OPENLIST_API,
 } from "./onedriveAuth";
 import { scanOutcomeClasses, scanOutcomeLabels } from "./scanResults";
 
-export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "yun139" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
 
 export const kindAbbr: Record<string, string> = {
   quark: "Qk",
@@ -22,6 +23,7 @@ export const kindAbbr: Record<string, string> = {
   p123: "123",
   pikpak: "Pk",
   wopan: "Wo",
+  yun139: "139",
   guangyapan: "GY",
   onedrive: "OD",
   googledrive: "GD",
@@ -35,6 +37,7 @@ export const kindIconPath: Record<string, string> = {
   p123: p123Icon,
   pikpak: pikpakIcon,
   wopan: wopanIcon,
+  yun139: yun139Icon,
   guangyapan: guangyapanIcon,
   onedrive: onedriveIcon,
   googledrive: googledriveIcon,
@@ -62,6 +65,7 @@ export const kindLabel: Record<string, string> = {
   p123: "123网盘",
   pikpak: "PikPak",
   wopan: "联通网盘",
+  yun139: "移动网盘",
   guangyapan: "光鸭网盘",
   onedrive: "OneDrive",
   googledrive: "Google Drive",
@@ -154,6 +158,7 @@ export function formatClock(value: string): string {
 }
 
 export function defaultRootId(kind: Kind): string {
+  if (kind === "yun139") return "/";
   if (kind === "pikpak") return "";
   if (kind === "guangyapan") return "";
   if (kind === "onedrive") return "root";
@@ -191,6 +196,17 @@ export type CredentialField = {
 
 export function credentialFields(kind: Kind): CredentialField[] {
   switch (kind) {
+    case "yun139":
+      return [
+        {
+          key: "authorization",
+          label: "Authorization",
+          placeholder: "登录 yun.139.com，在网络请求头中复制 Authorization（可包含 Basic 前缀）",
+          methodLabel: "或手动填写",
+          multiline: true,
+          required: true,
+        },
+      ];
     case "quark":
       return [
         {

@@ -13,7 +13,7 @@ type Capabilities struct {
 // and validation. It prevents UI and endpoint allowlists from drifting apart.
 func CapabilitiesForKind(kind string) Capabilities {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "quark", "p115", "p123", "pikpak", "wopan", "guangyapan", "onedrive", "googledrive", "webdav":
+	case "quark", "p115", "p123", "pikpak", "wopan", "yun139", "guangyapan", "onedrive", "googledrive", "webdav":
 		return Capabilities{Upload: true}
 	default:
 		return Capabilities{}

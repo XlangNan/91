@@ -30,6 +30,7 @@ import (
 	"github.com/video-site/backend/internal/drives/telegramstorage"
 	"github.com/video-site/backend/internal/drives/webdav"
 	"github.com/video-site/backend/internal/drives/wopan"
+	"github.com/video-site/backend/internal/drives/yun139"
 	"github.com/video-site/backend/internal/fingerprint"
 	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/readretry"
@@ -898,6 +899,8 @@ func configureDriveCredentialLease(lease driveCredentialLease, d *catalog.Drive)
 		anchorKey = "cookie"
 	case p123.Kind:
 		anchorKey = "access_token"
+	case yun139.Kind:
+		anchorKey = "authorization"
 	case "pikpak", "wopan", guangyapan.Kind, "onedrive", googledrive.Kind:
 		anchorKey = "refresh_token"
 	}
@@ -1052,6 +1055,15 @@ func (a *App) attachDriveConfigUnlocked(ctx context.Context, d *catalog.Drive, r
 					"captcha_token": captcha,
 					"device_id":     deviceID,
 				})
+			},
+		})
+	case yun139.Kind:
+		drv = yun139.New(yun139.Config{
+			ID: d.ID, RootID: d.RootID,
+			Authorization: d.Credentials["authorization"],
+			UploadTempDir: a.uploadWorkDir(yun139.Kind),
+			OnAuthorizationUpdate: func(authorization string) {
+				a.persistDriveCredentials(credentialLease, map[string]string{"authorization": authorization})
 			},
 		})
 	case "wopan":

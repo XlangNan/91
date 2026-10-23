@@ -38,6 +38,7 @@ import (
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
 	"github.com/video-site/backend/internal/drives/webdav"
 	"github.com/video-site/backend/internal/drives/wopan"
+	"github.com/video-site/backend/internal/drives/yun139"
 	"github.com/video-site/backend/internal/mediaasset"
 	"github.com/video-site/backend/internal/persistence"
 	"github.com/video-site/backend/internal/videoname"
@@ -255,6 +256,31 @@ func (a *wopanAdapter) Rename(ctx context.Context, fileID, newName string) error
 	return a.d.Rename(ctx, fileID, newName)
 }
 
+type yun139Adapter struct {
+	d *yun139.Driver
+	existingUploadCache
+}
+
+func (a *yun139Adapter) ID() string     { return a.d.ID() }
+func (a *yun139Adapter) Kind() string   { return a.d.Kind() }
+func (a *yun139Adapter) RootID() string { return a.d.RootID() }
+func (a *yun139Adapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
+	return a.d.EnsureDir(ctx, pathFromRoot)
+}
+func (a *yun139Adapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
+	fileID, err := a.d.Upload(ctx, parentID, name, r, size)
+	if err != nil {
+		return UploadResult{}, err
+	}
+	return UploadResult{FileID: fileID, Size: size}, nil
+}
+func (a *yun139Adapter) Rename(ctx context.Context, fileID, name string) error {
+	return a.d.Rename(ctx, fileID, name)
+}
+func (a *yun139Adapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
+	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
+}
+
 type guangyapanAdapter struct {
 	d *guangyapan.Driver
 	existingUploadCache
@@ -408,6 +434,8 @@ func adaptUploadTarget(d drives.Drive) (uploadTarget, error) {
 		return &googledriveAdapter{d: v}, nil
 	case *wopan.Driver:
 		return &wopanAdapter{d: v}, nil
+	case *yun139.Driver:
+		return &yun139Adapter{d: v}, nil
 	case *guangyapan.Driver:
 		return &guangyapanAdapter{d: v}, nil
 	case *webdav.Driver:

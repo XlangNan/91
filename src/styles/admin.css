@@ -4992,6 +4992,7 @@ body.admin-mobile-nav-open {
 .admin-video-source-tab__icon.is-drive[data-kind="p123"] { background: color-mix(in srgb, var(--drive-p123) 16%, var(--bg-surface)); color: var(--drive-p123); }
 .admin-video-source-tab__icon.is-drive[data-kind="pikpak"] { background: color-mix(in srgb, var(--drive-pikpak) 16%, var(--bg-surface)); color: var(--drive-pikpak); }
 .admin-video-source-tab__icon.is-drive[data-kind="wopan"] { background: color-mix(in srgb, var(--drive-wopan) 16%, var(--bg-surface)); color: var(--drive-wopan); }
+.admin-video-source-tab__icon.is-drive[data-kind="yun139"] { background: color-mix(in srgb, var(--drive-yun139) 16%, var(--bg-surface)); color: var(--drive-yun139); }
 .admin-video-source-tab__icon.is-drive[data-kind="guangyapan"] { background: color-mix(in srgb, var(--drive-guangyapan) 16%, var(--bg-surface)); color: var(--drive-guangyapan); }
 .admin-video-source-tab__icon.is-drive[data-kind="onedrive"] { background: color-mix(in srgb, var(--drive-onedrive) 16%, var(--bg-surface)); color: var(--drive-onedrive); }
 .admin-video-source-tab__icon.is-drive[data-kind="googledrive"] { background: color-mix(in srgb, #4285f4 16%, var(--bg-surface)); color: #4285f4; }
@@ -7371,6 +7372,7 @@ body.admin-mobile-nav-open {
 .admin-drive-card__brand-icon[data-kind="p123"] { background: var(--drive-p123); }
 .admin-drive-card__brand-icon[data-kind="pikpak"] { background: var(--drive-pikpak); }
 .admin-drive-card__brand-icon[data-kind="wopan"] { background: var(--drive-wopan); }
+.admin-drive-card__brand-icon[data-kind="yun139"] { background: var(--drive-yun139); }
 .admin-drive-card__brand-icon[data-kind="guangyapan"] { background: var(--drive-guangyapan); }
 .admin-drive-card__brand-icon[data-kind="onedrive"] { background: var(--drive-onedrive); }
 .admin-drive-card__brand-icon[data-kind="googledrive"] { background: #4285f4; }

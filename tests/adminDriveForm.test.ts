@@ -126,6 +126,7 @@ const driveIconKinds = [
   "quark",
   "webdav",
   "wopan",
+  "yun139",
 ];
 const generatedDriveIcons = [{ kind: "localstorage", ext: "png" }];
 
@@ -468,6 +469,7 @@ test("drive type selector keeps primary source order", () => {
     { value: "googledrive", label: "Google Drive" },
     { value: "quark", label: "夸克网盘" },
     { value: "wopan", label: "联通网盘" },
+    { value: "yun139", label: "移动网盘" },
     { value: "webdav", label: "WebDAV" },
     { value: "localstorage", label: "本地存储" },
   ]);

@@ -3783,6 +3783,11 @@ func NormalizeDriveRootID(kind, rootID string) string {
 			return "root"
 		}
 		return rootID
+	case "yun139":
+		if rootID == "" {
+			return "/"
+		}
+		return rootID
 	case "webdav":
 		if rootID == "" {
 			return "/"

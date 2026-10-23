@@ -835,6 +835,12 @@
   color: var(--drive-pikpak);
 }
 
+.vd-meta__chip[data-tone="yun139"] {
+  background: rgba(36, 155, 219, 0.14);
+  border-color: rgba(36, 155, 219, 0.3);
+  color: var(--drive-yun139);
+}
+
 .vd-meta__chip[data-tone="wopan"] {
   background: rgba(255, 138, 60, 0.14);
   border-color: rgba(255, 138, 60, 0.3);

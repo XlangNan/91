@@ -62,6 +62,7 @@ function sourceKindFromLabel(label: string): string {
   if (value.includes("115") || value.includes("p115")) return "p115";
   if (value.includes("123") || value.includes("p123")) return "p123";
   if (value.includes("pikpak")) return "pikpak";
+  if (value.includes("移动") || value.includes("yun139")) return "yun139";
   if (value.includes("沃盘") || value.includes("wopan") || value.includes("联通"))
     return "wopan";
   if (value.includes("光鸭") || value.includes("guangyapan") || value.includes("guangya"))

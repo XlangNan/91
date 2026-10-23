@@ -3576,6 +3576,7 @@ function getDriveShortName(source: string): string {
   if (s.includes("115")) return "115";
   if (s.includes("123")) return "123";
   if (s.includes("pikpak")) return "PikP";
+  if (s.includes("移动") || s.includes("yun139")) return "移动";
   if (s.includes("quark") || s.includes("夸克")) return "Quak";
   if (s.includes("onedrive")) return "OD";
   if (s.includes("wopan") || s.includes("沃盘")) return "沃盘";

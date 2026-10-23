@@ -348,6 +348,14 @@
   --drive-shadow: rgba(138, 109, 255, 0.15);
   --drive-shadow-strong: rgba(138, 109, 255, 0.4);
 }
+.source-badge[data-kind="yun139"] {
+  --drive-color: var(--drive-yun139);
+  --drive-bg: rgba(36, 155, 219, 0.12);
+  --drive-text: #9bd9fa;
+  --drive-border: rgba(36, 155, 219, 0.35);
+  --drive-shadow: rgba(36, 155, 219, 0.15);
+  --drive-shadow-strong: rgba(36, 155, 219, 0.4);
+}
 .source-badge[data-kind="wopan"] {
   --drive-color: var(--drive-wopan);
   --drive-bg: rgba(255, 138, 60, 0.12);
