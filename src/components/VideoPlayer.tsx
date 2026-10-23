@@ -15,8 +15,17 @@ import {
   attachVideoSource,
   disposeVideoSource,
   PLAYBACK_SOURCE_ERROR,
+  PLAYBACK_SOURCE_CHANGE,
   playbackSourceError,
   playbackSourceURL,
+  playbackSourceState,
+  playbackModeLabel,
+  PLAYBACK_MODES,
+  retryVideoSource,
+  selectPlaybackMode,
+  useOriginalVideoSource,
+  type PlaybackState,
+  type PlaybackMode,
 } from "@/lib/videoSource";
 import {
   getPlayerGesturePoint,
@@ -149,12 +158,10 @@ const DEFAULT_SETTINGS: PlayerSettings = {
 };
 const DEFAULT_SETTING_LAYOUT = {
   width: Artplayer.SETTING_WIDTH,
-  itemWidth: Artplayer.SETTING_ITEM_WIDTH,
   itemHeight: Artplayer.SETTING_ITEM_HEIGHT,
 };
 const COMPACT_SETTING_LAYOUT = {
   width: 172,
-  itemWidth: 148,
   itemHeight: 30,
 };
 const ORIENTATION_CONTROL_NAME = "orientationToggle";
@@ -291,7 +298,9 @@ export function VideoPlayer({
 
   function retryPlayback() {
     setPlayerError(null);
-    setRetryNonce((n) => n + 1);
+    if (!artRef.current || !retryVideoSource(artRef.current.video)) {
+      setRetryNonce((n) => n + 1);
+    }
   }
 
   async function copySource() {
@@ -308,6 +317,8 @@ export function VideoPlayer({
   const previewStyle = previewHover
     ? ({ left: `${previewHover.x}px` } as CSSProperties)
     : undefined;
+  const sourceState = artRef.current ? playbackSourceState(artRef.current.video) : null;
+  const recoveryModes = sourceState?.error?.recoveryModes ?? [];
 
   return (
     <div className="video-player">
@@ -319,8 +330,15 @@ export function VideoPlayer({
           <div className="video-player__error-message">{playerError.message}</div>
           <div className="video-player__error-actions">
             <button type="button" onClick={retryPlayback}>
-              重试
+              {sourceState?.error ? "重新获取" : "重试"}
             </button>
+            {recoveryModes.map((mode) => (
+              <button key={mode} type="button" onClick={() => {
+                if (artRef.current) selectPlaybackMode(artRef.current.video, mode);
+              }}>
+                {mode === "original" ? "尝试原画播放" : "切换兼容播放"}
+              </button>
+            ))}
             <button type="button" onClick={copySource}>
               复制地址
             </button>
@@ -419,9 +437,8 @@ function mountArtPlayer({
   let diagnosticController: AbortController | null = null;
   let diagnosticPromise: Promise<string | null> | null = null;
   let diagnosticMessage: string | null = null;
-  configureArtPlayerSettingLayout(
-    shouldUseCompactPlayerSettings(mount, enableOrientationControl)
-  );
+  const compactSettings = shouldUseCompactPlayerSettings(mount, enableOrientationControl);
+  configureArtPlayerSettingLayout(compactSettings);
   const option: Option = {
     id: "91-detail-player",
     container: mount,
@@ -480,8 +497,12 @@ function mountArtPlayer({
   }
 
   const art = new Artplayer(option);
+  // The shared source controller owns recovery. ArtPlayer's delayed reconnect
+  // would otherwise reload an old source after a successful automatic switch.
+  if (playbackUrl || sourceType === "m3u8") art.off("video:error");
   artRef.current = art;
   art.template.$player.classList.add(PLAYER_SURFACE_CLASS);
+  art.template.$player.dataset.settingsLayout = compactSettings ? "compact" : "default";
 
   const video = art.video;
   disablePlayerVolumePersistence(art.storage);
@@ -584,6 +605,25 @@ function mountArtPlayer({
     if (message) onError({ title: "视频源暂不可用", message });
   }
 
+  let previousSourceNotice: string | null = null;
+  let previousPlaybackSetting = "";
+  function handleSourceChange() {
+    const state = playbackSourceState(video);
+    if (!state) return;
+    if (!state.error) onError(null);
+    const hasCloudSource = state.sources.some((source) => source.kind === "transcoded");
+    const settingKey = `${state.mode}:${hasCloudSource}`;
+    if (settingKey !== previousPlaybackSetting && hasCloudSource) {
+      art.setting.update(createPlaybackSetting(state));
+    } else if (!hasCloudSource && art.setting.find("playback-mode")) {
+      art.setting.remove("playback-mode");
+    }
+    updatePlaybackSourceStatus(art, state);
+    previousPlaybackSetting = settingKey;
+    if (state.notice && state.notice !== previousSourceNotice) art.notice.show = state.notice;
+    previousSourceNotice = state.notice;
+  }
+
   function clearPlaybackDiagnostic() {
     diagnosticController?.abort();
     diagnosticController = null;
@@ -635,6 +675,7 @@ function mountArtPlayer({
 
   art.on("video:loadstart", handleLoadStart);
   video.addEventListener(PLAYBACK_SOURCE_ERROR, handleSourceError);
+  video.addEventListener(PLAYBACK_SOURCE_CHANGE, handleSourceChange);
   art.on("video:loadeddata", handleReady);
   art.on("video:canplay", handleReady);
   art.on("video:playing", handleReady);
@@ -657,6 +698,7 @@ function mountArtPlayer({
   return () => {
     disposed = true;
     video.removeEventListener(PLAYBACK_SOURCE_ERROR, handleSourceError);
+    video.removeEventListener(PLAYBACK_SOURCE_CHANGE, handleSourceChange);
     disposeVideoSource(video);
     clearPlaybackDiagnostic();
     // ArtPlayer 的网页全屏会把播放器节点临时移动到 document.body。
@@ -1016,7 +1058,7 @@ function shouldUseCompactPlayerSettings(
 function configureArtPlayerSettingLayout(compact: boolean) {
   const layout = compact ? COMPACT_SETTING_LAYOUT : DEFAULT_SETTING_LAYOUT;
   Artplayer.SETTING_WIDTH = layout.width;
-  Artplayer.SETTING_ITEM_WIDTH = layout.itemWidth;
+  Artplayer.SETTING_ITEM_WIDTH = layout.width;
   Artplayer.SETTING_ITEM_HEIGHT = layout.itemHeight;
 }
 
@@ -1039,7 +1081,7 @@ function createLoopSetting() {
   };
 }
 
-/** ArtPlayer 设置面板宽度默认为 200px，字幕列表需要更宽一些。 */
+/** 字幕文件名使用独立宽度；短选项子菜单继承主菜单宽度。 */
 const SUBTITLE_PANEL_WIDTH = 240;
 
 type PlayerSubtitle = VideoSubtitle & { type: "vtt" | "srt" | "ass" };
@@ -1080,6 +1122,39 @@ function createPlayerSettings(
   requestSubtitles: () => Promise<void>
 ) {
   return [createLoopSetting(), createSubtitleSetting(state, requestSubtitles)];
+}
+
+function playbackSourceStatus(state: PlaybackState) {
+  if (state.error) return "播放源暂不可用";
+  if (state.loading) return "正在获取播放源";
+  return state.activeSource ? `当前：${state.activeSource.label}` : "等待播放源";
+}
+
+function updatePlaybackSourceStatus(art: Artplayer, state: PlaybackState) {
+  const label = playbackSourceStatus(state);
+  art.template.$setting.querySelectorAll(".video-player__playback-source-status").forEach((element) => {
+    element.textContent = label;
+    element.setAttribute("title", label);
+  });
+}
+
+function createPlaybackSetting(state: PlaybackState): PlayerSetting {
+  return {
+    name: "playback-mode",
+    html: `<span class="video-player__playback-heading"><span>播放方式</span><span class="video-player__playback-source-status">${escapeHtml(playbackSourceStatus(state))}</span></span>`,
+    tooltip: playbackModeLabel(state.mode),
+    // Inherit the root menu width; only subtitle names need a wider panel.
+    selector: PLAYBACK_MODES.map((mode) => ({
+      name: `playback-mode-${mode.value}`,
+      html: mode.label,
+      value: mode.value,
+      default: state.mode === mode.value,
+    })),
+    onSelect(this: Artplayer, item: SettingOption) {
+      selectPlaybackMode(this.video, item.value as PlaybackMode);
+      return playbackModeLabel(playbackSourceState(this.video)?.mode ?? "auto");
+    },
+  };
 }
 
 function updateSubtitleSetting(
@@ -1569,7 +1644,7 @@ function bindTripleScreen(art: Artplayer, video: HTMLVideoElement, src: string) 
         updateTripleScreenControl(art, true, false);
         art.notice.show = "正在切换到三屏中转播放";
         activePlaybackSrc = relaySrc;
-        art.url = relaySrc;
+        if (!useOriginalVideoSource(video, relaySrc)) art.url = relaySrc;
         return;
       }
 

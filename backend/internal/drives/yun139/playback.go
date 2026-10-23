@@ -9,10 +9,10 @@ import (
 	"github.com/video-site/backend/internal/drives"
 )
 
-// PlaybackLinks uses Mobile Cloud's browser-ready HLS independently of the
+// PlaybackSources uses Mobile Cloud's browser-ready HLS independently of the
 // original bytes used by downloads, fingerprints and background generation.
 // The shared playback resolver owns caching and explicit link refreshes.
-func (d *Driver) PlaybackLinks(ctx context.Context, fileID string) (*drives.PlaybackLinks, error) {
+func (d *Driver) PlaybackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
 	fileID = strings.TrimSpace(fileID)
 	if fileID == "" {
 		return nil, errors.New("yun139 playback: empty file ID")
@@ -35,22 +35,21 @@ func (d *Driver) PlaybackLinks(ctx context.Context, fileID string) (*drives.Play
 		return nil, errors.New("yun139 playback: preview response belongs to a different file")
 	}
 	preview := result.Data.PreviewInfo
+	source := drives.PlaybackSource{ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: "unavailable", MediaType: "application/vnd.apple.mpegurl", Message: "移动云盘暂未提供该视频的兼容播放源"}
 	if strings.EqualFold(strings.TrimSpace(preview.Status), "Finished") && strings.TrimSpace(preview.URL) != "" {
 		url := strings.TrimSpace(preview.URL)
 		if !validHTTPURL(url) {
 			return nil, errors.New("yun139 playback: invalid HLS URL")
 		}
-		return &drives.PlaybackLinks{HLS: &drives.StreamLink{
+		source.Status, source.Message = "ready", ""
+		source.Link = &drives.StreamLink{
 			URL: url, Expires: time.Now().Add(2 * time.Minute), ClientRedirectSafe: true,
-		}}, nil
+		}
+	} else if strings.EqualFold(preview.Status, "Pending") || strings.EqualFold(preview.Status, "Running") {
+		source.Status = "processing"
+		source.Message = "移动云盘正在转码，请稍后重试兼容播放"
 	}
-	// Native-compatible formats can still play while cloud transcoding is
-	// pending. The API layer excludes raw TS/MTS/M2TS from this fallback.
-	original, err := d.StreamURL(ctx, fileID)
-	if err != nil {
-		return nil, err
-	}
-	return &drives.PlaybackLinks{Original: original}, nil
+	return []drives.PlaybackSource{source}, nil
 }
 
 var _ drives.PlaybackSourceProvider = (*Driver)(nil)

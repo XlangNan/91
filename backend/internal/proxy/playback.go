@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -12,21 +11,21 @@ import (
 )
 
 type cachedPlayback struct {
-	links *drives.PlaybackLinks
-	until time.Time
+	sources []drives.PlaybackSource
+	until   time.Time
 }
 
 type playbackCall struct {
-	done  chan struct{}
-	once  sync.Once
-	links *drives.PlaybackLinks
-	err   error
+	done    chan struct{}
+	once    sync.Once
+	sources []drives.PlaybackSource
+	err     error
 }
 
-// PlaybackLinks resolves metadata only. A nil result means this drive uses the
+// PlaybackSources resolves optional cloud metadata only. A nil result uses the
 // existing original-file playback route. Refresh bypasses cache, not inflight
 // work, so simultaneous user retries still share one provider request.
-func (p *Proxy) PlaybackLinks(ctx context.Context, driveID, fileID string, refresh bool) (*drives.PlaybackLinks, error) {
+func (p *Proxy) PlaybackSources(ctx context.Context, driveID, fileID string, refresh bool) ([]drives.PlaybackSource, error) {
 	d, ok := p.Registry.Get(driveID)
 	if !ok {
 		if failure, found := p.driveInitError(driveID); found {
@@ -43,7 +42,7 @@ func (p *Proxy) PlaybackLinks(ctx context.Context, driveID, fileID string, refre
 	if c, found := p.playbackCache[key]; found {
 		if !refresh && time.Now().Before(c.until) {
 			p.cacheMu.Unlock()
-			return c.links, nil
+			return c.sources, nil
 		}
 		delete(p.playbackCache, key)
 	}
@@ -56,21 +55,22 @@ func (p *Proxy) PlaybackLinks(ctx context.Context, driveID, fileID string, refre
 			deadline = linkResolveTimeout
 		}
 		resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deadline)
-		finish := func(links *drives.PlaybackLinks, err error) {
+		finish := func(sources []drives.PlaybackSource, err error) {
 			call.once.Do(func() {
 				p.cacheMu.Lock()
 				defer p.cacheMu.Unlock()
-				call.links, call.err = links, err
+				call.sources, call.err = sources, err
 				if p.playbackInflight[key] == call {
 					delete(p.playbackInflight, key)
-					if err == nil && links != nil {
+					if err == nil && sources != nil {
 						now := time.Now()
 						ttl := 2 * time.Minute
-						if links.HLS == nil {
+						if !hasReadyPlaybackSource(sources) {
 							ttl = 10 * time.Second
 						}
 						until := now.Add(ttl)
-						for _, link := range []*drives.StreamLink{links.HLS, links.Original} {
+						for _, source := range sources {
+							link := source.Link
 							if link != nil && !link.Expires.IsZero() && link.Expires.Before(until) {
 								until = link.Expires
 							}
@@ -86,7 +86,7 @@ func (p *Proxy) PlaybackLinks(ctx context.Context, driveID, fileID string, refre
 								break
 							}
 						}
-						p.playbackCache[key] = cachedPlayback{links: links, until: until}
+						p.playbackCache[key] = cachedPlayback{sources: sources, until: until}
 					}
 				}
 				close(call.done)
@@ -94,14 +94,14 @@ func (p *Proxy) PlaybackLinks(ctx context.Context, driveID, fileID string, refre
 		}
 		go func() {
 			defer cancel()
-			links, err := provider.PlaybackLinks(resolveCtx, fileID)
-			if err == nil && links == nil {
-				err = fmt.Errorf("provider returned empty playback metadata")
+			sources, err := provider.PlaybackSources(resolveCtx, fileID)
+			if err == nil && sources == nil {
+				err = fmt.Errorf("provider returned nil playback sources")
 			}
 			if resolveCtx.Err() != nil {
 				err = resolveCtx.Err()
 			}
-			finish(links, err)
+			finish(sources, err)
 		}()
 		go func() { <-resolveCtx.Done(); finish(nil, resolveCtx.Err()) }()
 	}
@@ -110,10 +110,7 @@ func (p *Proxy) PlaybackLinks(ctx context.Context, driveID, fileID string, refre
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-call.done:
-		if call.err == nil {
-			p.reportStreamResult(driveID, nil)
-		}
-		return call.links, call.err
+		return call.sources, call.err
 	}
 }
 
@@ -124,10 +121,29 @@ func (p *Proxy) WritePlaybackError(w http.ResponseWriter, driveID string, err er
 	} else if failure, ok := p.driveInitError(driveID); ok {
 		kind = failure.kind
 	}
-	if !errors.Is(err, context.Canceled) && streamErrorAffectsDrive(err) {
-		p.reportStreamResult(driveID, err)
-	}
+	// Optional preview failures do not determine original-file drive health.
 	writeStreamError(w, kind, err)
+}
+
+func hasReadyPlaybackSource(sources []drives.PlaybackSource) bool {
+	for _, source := range sources {
+		if source.Status == "ready" && source.Link != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// InvalidateStreamLink refreshes only this viewer's original-file link. Cloud
+// links and other files remain cached; concurrent resolutions remain shared.
+func (p *Proxy) InvalidateStreamLink(driveID, fileID string, header http.Header) {
+	d, ok := p.Registry.Get(driveID)
+	if !ok {
+		return
+	}
+	p.cacheMu.Lock()
+	delete(p.cache, linkCacheKey(d, driveID, fileID, header))
+	p.cacheMu.Unlock()
 }
 
 // Provider playback prewarming belongs to the active/next frontend element,

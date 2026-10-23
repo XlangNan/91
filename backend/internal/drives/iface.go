@@ -61,16 +61,23 @@ type GenerationStreamScanResetter interface {
 	ResetGenerationStreamForScan()
 }
 
-// PlaybackSourceProvider resolves browser playback independently of the original
-// bytes used by downloads and fingerprinting. Returned URLs must authorize the
-// browser without account headers; media is fetched directly by the browser.
+// PlaybackSourceProvider supplies optional cloud playback sources. The common
+// playback layer always supplies the original through StreamURL independently.
+// Links must authorize browser requests without account headers and support CORS
+// for HLS playlists, segments and keys. Background generation is a separate API.
 type PlaybackSourceProvider interface {
-	PlaybackLinks(context.Context, string) (*PlaybackLinks, error)
+	PlaybackSources(context.Context, string) ([]PlaybackSource, error)
 }
 
-type PlaybackLinks struct {
-	HLS      *StreamLink
-	Original *StreamLink
+type PlaybackSource struct {
+	ID        string
+	Label     string
+	Kind      string // original or transcoded; independent of transport protocol
+	Protocol  string // file or hls
+	Status    string // ready, processing or unavailable
+	Link      *StreamLink
+	MediaType string
+	Message   string
 }
 
 // Uploader is the optional write capability of a drive. Callers that produce

@@ -107,17 +107,17 @@ test("detail player does not persist ArtPlayer user settings", () => {
 });
 
 test("detail player uses compact ArtPlayer settings panel on mobile", () => {
-  assert.match(playerSource, /const COMPACT_SETTING_LAYOUT = \{[\s\S]*width:\s*172[\s\S]*itemWidth:\s*148[\s\S]*itemHeight:\s*30/s);
+  assert.match(playerSource, /const COMPACT_SETTING_LAYOUT = \{[\s\S]*width:\s*172[\s\S]*itemHeight:\s*30/s);
   assert.match(
     playerSource,
-    /configureArtPlayerSettingLayout\(\s*shouldUseCompactPlayerSettings\(mount,\s*enableOrientationControl\)\s*\)/
+    /const compactSettings = shouldUseCompactPlayerSettings\(mount,\s*enableOrientationControl\)/
   );
   assert.match(playerSource, /Artplayer\.SETTING_WIDTH = layout\.width/);
-  assert.match(playerSource, /Artplayer\.SETTING_ITEM_WIDTH = layout\.itemWidth/);
+  assert.match(playerSource, /Artplayer\.SETTING_ITEM_WIDTH = layout\.width/);
   assert.match(playerSource, /Artplayer\.SETTING_ITEM_HEIGHT = layout\.itemHeight/);
   assert.match(
     detailCss,
-    /@media \(max-width:\s*640px\)\s*\{[\s\S]*\.video-player \.art-video-player\s*\{[^}]*--art-settings-icon-size:\s*18px[^}]*--art-settings-max-height:\s*132px[^}]*--art-selector-max-height:\s*132px/s
+    /\.video-player__art\.art-video-player\[data-settings-layout="compact"\]\s*\{[^}]*--art-settings-icon-size:\s*18px[^}]*--art-settings-max-height:\s*180px[^}]*--art-selector-max-height:\s*180px/s
   );
 });
 

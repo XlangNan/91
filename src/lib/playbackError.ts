@@ -9,6 +9,11 @@ export type PlaybackDiagnosticOptions = {
   signal?: AbortSignal;
 };
 
+export type PlaybackFailure = {
+  message: string;
+  kind: "access" | "throttled" | "network";
+};
+
 const MAX_SERVER_MESSAGE_LENGTH = 500;
 
 /**
@@ -22,6 +27,13 @@ export async function diagnosePlaybackSource(
   src: string,
   options: PlaybackDiagnosticOptions = {}
 ): Promise<string | null> {
+  return (await diagnosePlaybackFailure(src, options))?.message ?? null;
+}
+
+export async function diagnosePlaybackFailure(
+  src: string,
+  options: PlaybackDiagnosticOptions = {}
+): Promise<PlaybackFailure | null> {
   const baseHref = options.baseHref ?? window.location.href;
   const pageURL = new URL(baseHref);
   const sourceURL = new URL(src, pageURL);
@@ -46,28 +58,43 @@ export async function diagnosePlaybackSource(
     // the original browser codec/network message remains the best diagnosis.
     if (response.status === 0 || response.status < 400) return null;
 
-    const serverMessage = await readServerMessage(response);
-    if (serverMessage) return serverMessage;
+    const serverError = await readServerError(response);
+    // Provider failures use a structured code inside HTTP 502 responses.
+    const kind = response.status === 429 || serverError.code === "drive_rate_limited"
+      ? "throttled"
+      : [401, 403, 404, 410].includes(response.status) ||
+          ["drive_auth_failed", "drive_source_not_found"].includes(serverError.code)
+        ? "access"
+        : "network";
+    if (serverError.message) return { message: serverError.message, kind };
 
+    let message: string;
     switch (response.status) {
       case 401:
-        return "当前登录状态已失效，请重新登录后播放";
+        message = "当前登录状态已失效，请重新登录后播放";
+        break;
       case 403:
-        return "当前账号无权访问该视频源";
+        message = "当前账号无权访问该视频源";
+        break;
       case 404:
       case 410:
         if (sourceURL.pathname.startsWith("/p/share/")) {
-          return "分享播放凭证已失效，请重新打开有效的一次性分享链接";
+          message = "分享播放凭证已失效，请重新打开有效的一次性分享链接";
+          break;
         }
-        return "视频文件不存在或已失效，请联系管理员重新扫描";
+        message = "视频文件不存在或已失效，请联系管理员重新扫描";
+        break;
       case 429:
-        return "视频源当前正在限流，请稍后重试";
+        message = "视频源当前正在限流，请稍后重试";
+        break;
       default:
         if (response.status >= 500) {
-          return `视频源服务暂时不可用（HTTP ${response.status}），请稍后重试或联系管理员`;
+          message = `视频源服务暂时不可用（HTTP ${response.status}），请稍后重试或联系管理员`;
+        } else {
+          message = `视频源请求失败（HTTP ${response.status}），请稍后重试`;
         }
-        return `视频源请求失败（HTTP ${response.status}），请稍后重试`;
     }
+    return { message, kind };
   } catch {
     if (options.signal?.aborted) return null;
     return null;
@@ -83,16 +110,18 @@ export function isSameOriginPlaybackURL(sourceURL: URL, pageURL: URL) {
   );
 }
 
-async function readServerMessage(response: Response) {
+async function readServerError(response: Response) {
+  const empty = { code: "", message: "" };
   const contentType = response.headers.get("Content-Type")?.toLowerCase() ?? "";
-  if (!contentType.includes("application/json")) return "";
+  if (!contentType.includes("application/json")) return empty;
   try {
     const payload = (await response.json()) as StreamErrorPayload;
-    if (typeof payload.message !== "string") return "";
-    const message = payload.message.trim();
-    if (!message || message.length > MAX_SERVER_MESSAGE_LENGTH) return "";
-    return message;
+    const message = typeof payload?.message === "string" ? payload.message.trim() : "";
+    return {
+      code: typeof payload?.code === "string" ? payload.code : "",
+      message: message.length <= MAX_SERVER_MESSAGE_LENGTH ? message : "",
+    };
   } catch {
-    return "";
+    return empty;
   }
 }

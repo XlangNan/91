@@ -129,12 +129,12 @@ func TestOneTimeShareRouteClaimsOnceAndStreamsWithoutLogin(t *testing.T) {
 			t.Fatalf("unclaimed playback status = %d", rr.Code)
 		}
 		if authorized {
-			var source PlaybackSourceDTO
-			if err := json.Unmarshal(rr.Body.Bytes(), &source); err != nil {
+			var manifest PlaybackManifestDTO
+			if err := json.Unmarshal(rr.Body.Bytes(), &manifest); err != nil {
 				t.Fatal(err)
 			}
-			if rr.Code != http.StatusOK || source.URL != wantStream {
-				t.Fatalf("share playback = %d %+v", rr.Code, source)
+			if rr.Code != http.StatusOK || len(manifest.Sources) == 0 || manifest.Sources[0].URL != wantStream {
+				t.Fatalf("share playback = %d %+v", rr.Code, manifest)
 			}
 		}
 	}

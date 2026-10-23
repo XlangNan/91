@@ -135,16 +135,14 @@
 }
 
 /* ArtPlayer 会在运行时后插入图标的 display:flex，保留完整层级以确保覆盖它。 */
-.video-player
-  .art-video-player
+.video-player__art.art-video-player
   .art-settings
   .art-setting-panel
   .art-setting-item[data-name^="online-subtitle-option-"] {
   justify-content: center;
 }
 
-.video-player
-  .art-video-player
+.video-player__art.art-video-player
   .art-settings
   .art-setting-panel
   .art-setting-item[data-name^="online-subtitle-option-"]
@@ -158,8 +156,7 @@
  * flex-shrink: 0。字幕名字过长时，居中的一行会被左右两头同时裁掉，只剩中间
  * 一段。这里允许收缩并交给省略号处理，作为 JS 截断之外的兜底。
  */
-.video-player
-  .art-video-player
+.video-player__art.art-video-player
   .art-settings
   .art-setting-panel
   .art-setting-item[data-name^="online-subtitle-option-"]
@@ -176,24 +173,92 @@
   text-overflow: ellipsis;
 }
 
-/* 主面板“字幕”一行右侧显示当前轨道名，同样不能把整行挤出面板。 */
-.video-player
-  .art-video-player
-  .art-settings
-  .art-setting-panel
-  .art-setting-item[data-name="online-subtitle"]
-  > .art-setting-item-right {
+/* Every setting reserves space for its label and arrow before truncating text. */
+.video-player__art.art-video-player .art-settings {
+  max-width: calc(100% - var(--art-padding) * 2);
+  max-height: min(var(--art-settings-max-height), calc(100% - var(--art-control-height) - var(--art-padding)));
+}
+
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item {
+  column-gap: 8px;
+}
+
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item .art-setting-item-left,
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item .art-setting-item-right {
   min-width: 0;
 }
 
-.video-player
-  .art-video-player
-  .art-settings
-  .art-setting-panel
-  .art-setting-item[data-name="online-subtitle"]
-  .art-setting-item-right-tooltip {
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item .art-setting-item-left {
+  flex-shrink: 0;
+}
+
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item-back > .art-setting-item-left {
+  flex: 1;
+  justify-content: flex-start;
+}
+
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item .art-setting-item-left-icon,
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item .art-setting-item-right-icon {
+  flex-shrink: 0;
+}
+
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item .art-setting-item-right > .art-setting-item-right-icon {
+  min-width: 24px;
+}
+
+.video-player__art.art-video-player .art-settings .art-icon-arrowRight svg {
+  width: 24px;
+  height: 24px;
+}
+
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item .art-setting-item-left-text,
+.video-player__art.art-video-player .art-settings .art-setting-panel .art-setting-item .art-setting-item-right-tooltip {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-player__playback-heading {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 16px;
+}
+
+.video-player__playback-source-status {
+  display: none;
+}
+
+.video-player__art .art-setting-item-back .video-player__playback-source-status {
+  display: block;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 10px;
+  line-height: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-player__art.art-video-player[data-settings-layout="compact"] {
+  --art-settings-icon-size: 18px;
+  --art-settings-max-height: 180px;
+  --art-selector-max-height: 180px;
+  --art-scrollbar-size: 3px;
+}
+
+.video-player__art[data-settings-layout="compact"] .art-settings {
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.video-player__art[data-settings-layout="compact"] .art-settings .art-setting-panel .art-setting-item {
+  padding: 0 7px;
+}
+
+.video-player__art[data-settings-layout="compact"] .art-settings .art-setting-item-left,
+.video-player__art[data-settings-layout="compact"] .art-settings .art-setting-item-right {
+  gap: 5px;
 }
 
 /* 全屏时让字幕跟随 object-fit: contain 后的实际画面下缘，而不是视口底部。 */
@@ -460,6 +525,7 @@
 
 .video-player__error-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
   margin-top: 14px;
@@ -663,27 +729,6 @@
 }
 
 @media (max-width: 640px) {
-  .video-player .art-video-player {
-    --art-settings-icon-size: 18px;
-    --art-settings-max-height: 132px;
-    --art-selector-max-height: 132px;
-    --art-scrollbar-size: 3px;
-  }
-
-  .video-player .art-settings {
-    border-radius: 8px;
-    font-size: 12px;
-  }
-
-  .video-player .art-settings .art-setting-panel .art-setting-item {
-    padding: 0 7px;
-  }
-
-  .video-player .art-settings .art-setting-item-left,
-  .video-player .art-settings .art-setting-item-right {
-    gap: 5px;
-  }
-
   .video-player__error {
     width: calc(100% - 24px);
     padding: 16px;

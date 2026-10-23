@@ -1636,6 +1636,14 @@ func playbackMediaType(v *catalog.Video) string {
 	switch strings.ToLower(strings.TrimPrefix(strings.TrimSpace(v.Ext), ".")) {
 	case "mp4", "m4v":
 		return "video/mp4"
+	case "webm":
+		return "video/webm"
+	case "ogv", "ogg":
+		return "video/ogg"
+	case "ts", "mts", "m2ts":
+		return "video/mp2t"
+	case "mov":
+		return "video/quicktime"
 	default:
 		return ""
 	}

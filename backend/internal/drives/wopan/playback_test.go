@@ -11,7 +11,7 @@ import (
 	sdk "github.com/OpenListTeam/wopan-sdk-go"
 )
 
-func TestPlaybackLinksUsesPreviewAPIWithoutChangingOriginalDownload(t *testing.T) {
+func TestPlaybackSourcesUsesPreviewAPIWithoutChangingOriginalDownload(t *testing.T) {
 	const token = "0123456789abcdef-test"
 	crypto := sdk.NewCrypto()
 	_ = crypto.SetAccessToken(token)
@@ -53,11 +53,11 @@ func TestPlaybackLinksUsesPreviewAPIWithoutChangingOriginalDownload(t *testing.T
 	d.client = sdk.New(sdk.WithClient(client))
 	d.client.SetAccessToken(token)
 	d.client.Phone = "user"
-	links, err := d.PlaybackLinks(context.Background(), "fid/one")
+	links, err := d.PlaybackSources(context.Background(), "fid/one")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if links.HLS.URL != "https://hls.example/index.m3u8" || links.Original.URL != "https://download.example/video.ts" || !links.HLS.ClientRedirectSafe || len(links.HLS.Headers) != 0 {
+	if len(links) != 1 || links[0].ID != "cloud" || links[0].Kind != "transcoded" || links[0].Status != "ready" || links[0].Link.URL != "https://hls.example/index.m3u8" || !links[0].Link.ClientRedirectSafe || len(links[0].Link.Headers) != 0 {
 		t.Fatalf("links = %+v", links)
 	}
 }

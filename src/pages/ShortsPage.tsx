@@ -27,6 +27,13 @@ import {
   playbackSourceError,
   PLAYBACK_SOURCE_ERROR,
   PLAYBACK_SOURCE_READY,
+  PLAYBACK_SOURCE_CHANGE,
+  PLAYBACK_MODES,
+  playbackSourceState,
+  playbackStateLabel,
+  selectPlaybackMode,
+  type PlaybackMode,
+  type PlaybackState,
   retryVideoSource,
   videoSourceLoading,
 } from "@/lib/videoSource";
@@ -1655,6 +1662,7 @@ function ShortsSlideImpl({
   const [playbackFailure, setPlaybackFailure] =
     useState<ShortsPlaybackFailure | null>(null);
   const [sourceMessage, setSourceMessage] = useState<string | null>(null);
+  const [sourceState, setSourceState] = useState<PlaybackState | null>(null);
   const [fastActive, setFastActive] = useState(false);
   // 只改变内部播放器尺寸；外层 slide 的一屏高度仍由翻页器管理。
   const [mediaAspectRatio, setMediaAspectRatio] = useState(9 / 16);
@@ -1956,15 +1964,32 @@ function ShortsSlideImpl({
       setSourceMessage(message);
       exposePlaybackFailure("media-error");
     };
-    const handleSourceReady = () => setSourceMessage(null);
+    let previousNotice: string | null = null;
+    const handleSourceChange = () => {
+      const state = playbackSourceState(video);
+      setSourceState(state);
+      if (state && !state.error) {
+        setSourceMessage(null);
+        setPlaybackFailure(null);
+      }
+      if (state?.notice && state.notice !== previousNotice) showHud(state.notice);
+      previousNotice = state?.notice ?? null;
+    };
+    const handleSourceReady = () => {
+      setSourceMessage(null);
+      setPlaybackFailure(null);
+    };
     video.addEventListener(PLAYBACK_SOURCE_ERROR, handleSourceFailure);
     video.addEventListener(PLAYBACK_SOURCE_READY, handleSourceReady);
+    video.addEventListener(PLAYBACK_SOURCE_CHANGE, handleSourceChange);
+    handleSourceChange();
     handleSourceFailure();
     return () => {
       video.removeEventListener(PLAYBACK_SOURCE_ERROR, handleSourceFailure);
       video.removeEventListener(PLAYBACK_SOURCE_READY, handleSourceReady);
+      video.removeEventListener(PLAYBACK_SOURCE_CHANGE, handleSourceChange);
     };
-  }, [getVideoElement, isActive, shouldLoad, item.id, exposePlaybackFailure]);
+  }, [getVideoElement, isActive, shouldLoad, item.id, exposePlaybackFailure, showHud]);
 
   // 非当前屏/后续预加载/视频窗口内缓存视频不保留媒体源，确保离开窗口后浏览器中止原始网盘流。
   useEffect(() => {
@@ -3208,6 +3233,15 @@ function ShortsSlideImpl({
                   >
                     重试播放
                   </button>
+                  {sourceState?.error?.recoveryModes.map((mode) => (
+                    <button key={mode} type="button" className="shorts-slide__playback-retry"
+                      onClick={() => {
+                        const video = getVideoElement();
+                        if (video) selectPlaybackMode(video, mode);
+                      }}>
+                      {mode === "original" ? "尝试原画播放" : "切换兼容播放"}
+                    </button>
+                  ))}
                 </div>
               )}
 
@@ -3307,6 +3341,24 @@ function ShortsSlideImpl({
               className="shorts-slide__actions"
               onClick={(e) => e.stopPropagation()}
             >
+              {isActive && sourceState?.sources.some((source) => source.kind === "transcoded") && (
+                <label className="shorts-source-control" data-shorts-no-swipe=""
+                  onPointerDown={(event) => event.stopPropagation()}>
+                  <span>播放方式</span>
+                  <select aria-label="播放方式" value={sourceState.mode}
+                    title={playbackStateLabel(sourceState)}
+                    onChange={(event) => {
+                      const video = getVideoElement();
+                      if (video) selectPlaybackMode(video, event.target.value as PlaybackMode);
+                    }}>
+                    {PLAYBACK_MODES.map((mode) => (
+                      <option key={mode.value} value={mode.value}>
+                        {mode.value === "auto" && sourceState.mode === "auto" ? playbackStateLabel(sourceState) : mode.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {/* 云盘来源徽章同时是当前视频唯一的详情入口。 */}
               <ShortsTooltip label="来源" shortcut={SHORTS_ACTION_SHORTCUTS.source} placement="left" enabled={isDesktop}>
                 <Link

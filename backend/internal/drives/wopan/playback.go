@@ -12,16 +12,15 @@ import (
 	"github.com/video-site/backend/internal/drives"
 )
 
-func (d *Driver) PlaybackLinks(ctx context.Context, fileID string) (*drives.PlaybackLinks, error) {
+func (d *Driver) PlaybackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
 	d.clientMu.Lock()
 	defer d.clientMu.Unlock()
 	if d.client == nil {
 		return nil, fmt.Errorf("wopan playback: driver not initialized")
 	}
 	var data []struct {
-		FID         string `json:"fid"`
-		M3U8        string `json:"m3u8"`
-		DownloadURL string `json:"downloadUrl"`
+		FID  string `json:"fid"`
+		M3U8 string `json:"m3u8"`
 	}
 	_, err := d.client.RequestWoHome("VideoDisplayFiles", sdk.Json{
 		"fids":      []string{fileID},
@@ -40,15 +39,12 @@ func (d *Driver) PlaybackLinks(ctx context.Context, fileID string) (*drives.Play
 		if err != nil {
 			return nil, err
 		}
-		original, err := browserPlaybackLink(item.DownloadURL)
-		if err != nil {
-			return nil, err
+		source := drives.PlaybackSource{ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: "ready", Link: hls, MediaType: "application/vnd.apple.mpegurl"}
+		if hls == nil {
+			source.Status = "unavailable"
+			source.Message = "沃盘暂未提供该视频的兼容播放源"
 		}
-		links := &drives.PlaybackLinks{HLS: hls, Original: original}
-		if links.HLS == nil && links.Original == nil {
-			return nil, fmt.Errorf("wopan playback: empty source response")
-		}
-		return links, nil
+		return []drives.PlaybackSource{source}, nil
 	}
 	return nil, fmt.Errorf("wopan playback: source not found in preview response")
 }

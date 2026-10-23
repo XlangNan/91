@@ -1,40 +1,95 @@
 import type Hls from "hls.js";
-import { diagnosePlaybackSource } from "./playbackError";
+import { diagnosePlaybackFailure } from "./playbackError";
 
+export type PlaybackMode = "auto" | "original" | "compatible";
 export type PlaybackSource = {
-  type: "native" | "hls" | "unavailable";
+  id: string;
+  label: string;
+  kind: "original" | "transcoded";
+  protocol: "file" | "hls";
+  status: "unknown" | "ready" | "processing" | "unavailable";
   url?: string;
+  resolveUrl?: string;
   mediaType?: string;
   message?: string;
-  fallback?: PlaybackSource;
+  expiresAt?: string;
 };
-
+type PlaybackFailureReason = "unsupported" | "network" | "processing" | "unavailable" | "access" | "throttled" | "other";
+export type PlaybackSourceFailure = {
+  sourceID: string | null;
+  reason: PlaybackFailureReason;
+  message: string;
+  recoveryModes: readonly Exclude<PlaybackMode, "auto">[];
+};
+export type PlaybackState = {
+  mode: PlaybackMode;
+  sources: readonly PlaybackSource[];
+  activeSource: PlaybackSource | null;
+  loading: boolean;
+  error: PlaybackSourceFailure | null;
+  notice: string | null;
+};
+export const PLAYBACK_MODES: readonly { value: PlaybackMode; label: string }[] = [
+  { value: "auto", label: "智能选择" },
+  { value: "original", label: "原画播放" },
+  { value: "compatible", label: "兼容播放" },
+];
 export const PLAYBACK_SOURCE_ERROR = "playback-source-error";
 export const PLAYBACK_SOURCE_READY = "playback-source-ready";
+export const PLAYBACK_SOURCE_CHANGE = "playback-source-change";
+
 type SourceOptions = {
   refresh?: boolean;
+  mode?: PlaybackMode;
   loadNative?: (url: string) => void;
   fetch?: typeof fetch;
   loadHls?: () => Promise<typeof Hls>;
 };
 type SourceController = {
   key: string;
-  error: string | null;
   url: string;
-  readonly loading: boolean;
+  state: PlaybackState;
   retry(): void;
+  selectMode(mode: PlaybackMode): void;
+  useOriginalURL(url: string): void;
   destroy(): void;
 };
+type RestoreState = { time: number; playing: boolean; rate: number; volume: number; muted: boolean };
 const controllers = new WeakMap<HTMLVideoElement, SourceController>();
 
+export function playbackSourceState(video: HTMLVideoElement) {
+  const state = controllers.get(video)?.state;
+  return state ? { ...state } : null;
+}
 export function playbackSourceError(video: HTMLVideoElement) {
-  return controllers.get(video)?.error ?? null;
+  return playbackSourceState(video)?.error?.message ?? null;
 }
 export function videoSourceLoading(video: HTMLVideoElement) {
-  return controllers.get(video)?.loading ?? false;
+  return playbackSourceState(video)?.loading ?? false;
 }
 export function playbackSourceURL(video: HTMLVideoElement) {
   return controllers.get(video)?.url ?? video.currentSrc;
+}
+export function playbackModeLabel(mode: PlaybackMode) {
+  return PLAYBACK_MODES.find((option) => option.value === mode)?.label ?? "智能选择";
+}
+export function playbackStateLabel(state: PlaybackState | null) {
+  const active = state?.activeSource?.label;
+  if (!state || state.mode === "auto") return active ? `智能选择 · ${active}` : "智能选择";
+  return state.mode === "original" ? "原画播放" : "兼容播放";
+}
+export function selectPlaybackMode(video: HTMLVideoElement, mode: PlaybackMode) {
+  const controller = controllers.get(video);
+  if (!controller) return false;
+  controller.selectMode(mode);
+  return true;
+}
+/** Select an original-file delivery route, e.g. same-origin canvas playback. */
+export function useOriginalVideoSource(video: HTMLVideoElement, url: string) {
+  const controller = controllers.get(video);
+  if (!controller) return false;
+  controller.useOriginalURL(url);
+  return true;
 }
 export function disposeVideoSource(video: HTMLVideoElement) {
   controllers.get(video)?.destroy();
@@ -47,7 +102,15 @@ export function retryVideoSource(video: HTMLVideoElement) {
   return true;
 }
 
-/** Owns one media element's source, including persistent iOS shorts elements. */
+class SourceRequestError extends Error {
+  constructor(message: string, readonly reason: PlaybackFailureReason) { super(message); }
+}
+
+function stopsRecovery(reason: PlaybackFailureReason) {
+  return reason === "access" || reason === "throttled";
+}
+
+/** One controller owns selection, delivery and recovery for every player UI. */
 export function attachVideoSource(
   video: HTMLVideoElement,
   src: string,
@@ -61,31 +124,55 @@ export function attachVideoSource(
   if (replacing) {
     video.pause();
     video.removeAttribute("src");
+    video.querySelectorAll("source").forEach((source) => source.remove());
     video.load();
   }
   let disposed = false;
-  let loading = false;
   let generation = 0;
   let abort: AbortController | null = null;
   let hls: Hls | null = null;
-  let current: PlaybackSource | null = null;
-  let refreshed = false;
-  let usedFallback = false;
-  let restore: { time: number; playing: boolean; rate: number } | null = null;
+  let restore: RestoreState | null = null;
   let frameStart: number | null = null;
-  let firstLoad = true;
   let wasPlaying = false;
+  let initialized = false;
+  let originalURL: string | null = null;
+  const failed = new Set<string>();
+  const refreshed = new Set<string>();
   const controller: SourceController = {
-    key,
-    error: null,
-    url: src,
-    get loading() {
-      return loading;
-    },
+    key, url: src,
+    state: { mode: options.mode ?? "auto", sources: [], activeSource: null, loading: false, error: null, notice: null },
     retry() {
-      refreshed = false;
-      usedFallback = false;
-      void resolve(true);
+      const sourceID = controller.state.error ? controller.state.error.sourceID : controller.state.activeSource?.id;
+      const source = controller.state.sources.find((item) => item.id === sourceID);
+      if (initialized && source && (controller.state.mode !== "auto" || !nativeUnsupported(source))) {
+        failed.delete(source.id);
+        refreshed.delete(source.id);
+        void start(source, true);
+        return;
+      }
+      failed.clear();
+      refreshed.clear();
+      if (!initialized || playbackUrl) void initialize(true);
+      else void choose(true);
+    },
+    selectMode(mode) {
+      if (controller.state.mode === mode) return;
+      controller.state.mode = mode;
+      controller.state.notice = null;
+      failed.clear();
+      refreshed.clear();
+      changed();
+      if (initialized) void choose(false);
+    },
+    useOriginalURL(url) {
+      originalURL = url;
+      controller.state.mode = "original";
+      controller.state.notice = null;
+      failed.clear();
+      if (initialized) {
+        const source = controller.state.sources.find((item) => item.kind === "original");
+        if (source) void start(source, false);
+      }
     },
     destroy() {
       disposed = true;
@@ -96,9 +183,9 @@ export function attachVideoSource(
       video.removeEventListener("error", mediaFailed);
       video.removeEventListener("loadedmetadata", loaded);
       video.removeEventListener("timeupdate", checkFrames);
-      video.removeEventListener("playing", rememberPlaying);
       video.removeEventListener("play", rememberPlaying);
       video.removeEventListener("pause", rememberPause);
+      video.removeEventListener("volumechange", rememberVolume);
     },
   };
   controllers.set(video, controller);
@@ -106,215 +193,293 @@ export function attachVideoSource(
   video.addEventListener("error", mediaFailed);
   video.addEventListener("loadedmetadata", loaded);
   video.addEventListener("timeupdate", checkFrames);
-  video.addEventListener("playing", rememberPlaying);
   video.addEventListener("play", rememberPlaying);
   video.addEventListener("pause", rememberPause);
+  video.addEventListener("volumechange", rememberVolume);
 
+  function changed() {
+    if (!disposed) video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_CHANGE));
+  }
   function rememberPlaying() {
     wasPlaying = true;
+    if (restore) restore.playing = true;
     if (hls) hls.config.maxBufferLength = 15;
   }
   function rememberPause() {
-    if (!loading && !video.error && !controller.error) wasPlaying = false;
+    if (!controller.state.loading && !video.error && !controller.state.error) wasPlaying = false;
   }
-
-  function fail(message: string) {
-    if (disposed) return;
-    controller.error = message;
+  function rememberVolume() {
+    if (restore) {
+      restore.volume = video.volume;
+      restore.muted = video.muted;
+    }
+  }
+  function rememberState() {
+    restore ??= {
+      time: initialized ? video.currentTime || 0 : 0,
+      playing: wasPlaying || !video.paused,
+      rate: video.playbackRate || 1,
+      volume: video.volume, muted: video.muted,
+    };
+  }
+  function begin() {
+    rememberState();
+    const epoch = ++generation;
+    controller.state.loading = true;
+    controller.state.error = null;
+    frameStart = null;
+    abort?.abort();
+    abort = new AbortController();
+    hls?.destroy();
+    hls = null;
     video.pause();
+    if (controller.state.activeSource) {
+      video.removeAttribute("src");
+      video.querySelectorAll("source").forEach((source) => source.remove());
+      video.load();
+    }
+    changed();
+    return epoch;
+  }
+  function fail(message: string, source: PlaybackSource | null, reason: PlaybackFailureReason) {
+    if (disposed) return;
+    const recoveryModes: Exclude<PlaybackMode, "auto">[] = [];
+    if (!stopsRecovery(reason)) {
+      for (const alternative of controller.state.sources) {
+        if (alternative.id === source?.id || failed.has(alternative.id) ||
+            !["ready", "unknown"].includes(alternative.status) || nativeUnsupported(alternative)) continue;
+        const mode = alternative.kind === "original" ? "original" : "compatible";
+        if (!recoveryModes.includes(mode)) recoveryModes.push(mode);
+      }
+    }
+    const original = controller.state.sources.find((item) => item.kind === "original");
+    if (controller.state.mode === "auto" && source?.kind === "transcoded" &&
+        !stopsRecovery(reason) && original && (failed.has(original.id) || nativeUnsupported(original))) {
+      message = `原画播放暂不可用；${message}`;
+    }
+    if (controller.state.mode === "auto" && source?.kind === "original" && !stopsRecovery(reason)) {
+      const cloud = controller.state.sources.find((item) => item.kind === "transcoded" &&
+        (["processing", "unavailable"].includes(item.status) || failed.has(item.id)));
+      if (cloud) message = `${message}；${cloud.message || "兼容播放暂不可用"}`;
+    }
+    controller.state.loading = false;
+    controller.state.error = { sourceID: source?.id ?? null, reason, message, recoveryModes };
+    controller.state.notice = null;
+    video.pause();
+    changed();
     video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_ERROR));
   }
   function loaded() {
-    if (disposed || !restore) return;
+    if (disposed || controller.state.loading || !restore) return;
     const state = restore;
     restore = null;
     video.playbackRate = state.rate;
+    video.volume = state.volume;
+    video.muted = state.muted;
     if (state.time > 0 && Number.isFinite(video.duration)) {
-      try {
-        video.currentTime = Math.min(
-          state.time,
-          Math.max(0, video.duration - 0.1),
-        );
-      } catch {
-        /* media not seekable yet */
-      }
+      try { video.currentTime = Math.min(state.time, Math.max(0, video.duration - 0.1)); }
+      catch { /* Some media becomes seekable only after metadata. */ }
     }
     if (state.playing || wasPlaying) void video.play().catch(() => undefined);
   }
   function checkFrames() {
-    if (disposed || loading || controller.error || video.paused) return;
-    if (video.videoWidth > 0 && video.videoHeight > 0) {
-      frameStart = null;
-      return;
-    }
-    // Advancing audio with ready media but no video dimensions is the HEVC
-    // audio-only failure observed in Chromium. Wall-clock buffering is excluded.
+    if (disposed || controller.state.loading || controller.state.error || video.paused) return;
+    if (video.videoWidth > 0 && video.videoHeight > 0) { frameStart = null; return; }
+    // Media time advancing without video dimensions detects audio-only decode
+    // failures; wall-clock buffering must not trigger a source switch.
     if (video.readyState < 3) return;
-    if (frameStart === null) frameStart = video.currentTime;
-    if (video.currentTime - frameStart < 3) return;
-    void recover(
-      "当前浏览器未能解码视频画面，可能不支持原视频编码；可尝试支持该编码的浏览器，或稍后重新获取网盘 HLS 播放源",
-    );
+    frameStart ??= video.currentTime;
+    if (video.currentTime - frameStart >= 3)
+      void recover("unsupported", "当前浏览器未能解码视频画面");
   }
   function mediaFailed() {
-    if (disposed || loading || controller.error) return;
-    void recover("视频源加载失败，请重试或换用兼容的浏览器");
+    if (disposed || controller.state.loading || controller.state.error) return;
+    const code = video.error?.code;
+    if (code === 1) return; // User/navigation aborts are not source failures.
+    void recover(code === 3 || code === 4 ? "unsupported" : "network", "视频源加载失败", true);
   }
-  async function recover(message: string) {
-    if (disposed || loading) return;
-    if (playbackUrl && !refreshed) {
-      refreshed = true;
-      await resolve(true);
-      return;
-    }
-    if (current?.fallback && !usedFallback) {
-      usedFallback = true;
-      loading = true;
-      frameStart = null;
-      restore = {
-        time: video.currentTime || 0,
-        playing: wasPlaying || !video.paused,
-        rate: video.playbackRate || 1,
-      };
-      await load(current.fallback, ++generation);
-      return;
-    }
-    if (!playbackUrl) {
-      const epoch = generation;
-      const diagnostic = await diagnosePlaybackSource(src);
+  async function recover(kind: "unsupported" | "network" | "throttled", message: string, diagnose = false) {
+    if (disposed || controller.state.loading || controller.state.error) return;
+    const source = controller.state.activeSource;
+    if (!source) return;
+    rememberState();
+    controller.state.loading = true;
+    changed();
+    const epoch = generation;
+    if (diagnose) {
+      const diagnostic = await diagnosePlaybackFailure(controller.url, { fetch: options.fetch, signal: abort?.signal });
       if (disposed || epoch !== generation) return;
-      message = diagnostic || message;
+      if (diagnostic) {
+        message = diagnostic.message;
+        if (diagnostic.kind === "access" || diagnostic.kind === "throttled") {
+          fail(message, source, diagnostic.kind);
+          return;
+        }
+        kind = "network";
+      }
     }
-    fail(message);
-  }
-  async function resolve(refresh: boolean) {
-    if (disposed) return;
-    const epoch = ++generation;
-    loading = true;
-    controller.error = null;
-    frameStart = null;
-    restore = {
-      time: firstLoad ? 0 : video.currentTime || 0,
-      playing: wasPlaying || !video.paused,
-      rate: video.playbackRate || 1,
-    };
-    firstLoad = false;
-    abort?.abort();
-    const requestAbort = new AbortController();
-    abort = requestAbort;
-    if (!playbackUrl) {
-      await load(
-        { type: /\.m3u8(?:[?#]|$)/i.test(src) ? "hls" : "native", url: src },
-        epoch,
-      );
+    if (kind === "throttled") { fail("视频源当前正在限流，请稍后重试", source, kind); return; }
+    if (kind === "network" && !refreshed.has(source.id)) {
+      refreshed.add(source.id);
+      await start(source, true);
       return;
     }
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    failed.add(source.id);
+    if (controller.state.mode === "auto") {
+      const next = candidate();
+      if (next) {
+        const notice = source.kind === "original"
+          ? "原画暂时无法播放，已切换兼容播放" : "兼容播放暂时不可用，已切换其他播放源";
+        await start(next, false, notice);
+        return;
+      }
+    }
+    fail(message, source, kind);
+  }
+  function nativeUnsupported(source: PlaybackSource) {
+    return source.protocol === "file" && !!source.mediaType && video.canPlayType(source.mediaType) === "";
+  }
+  function candidate(refresh = false) {
+    const mode = controller.state.mode;
+    return controller.state.sources.find((source) =>
+      !failed.has(source.id) && (["ready", "unknown"].includes(source.status) || (refresh && !!source.resolveUrl)) &&
+      (mode === "original" ? source.kind === "original" : mode === "compatible" ? source.kind === "transcoded" : !nativeUnsupported(source)),
+    );
+  }
+  async function choose(refresh: boolean) {
+    const source = candidate(refresh);
+    if (!source) {
+      const unavailable = controller.state.sources.find((item) =>
+        item.kind === (controller.state.mode === "original" ? "original" : "transcoded")) ??
+        controller.state.sources.find((item) => item.kind === "original") ?? null;
+      const reason = unavailable?.status === "processing" ? "processing"
+        : unavailable && nativeUnsupported(unavailable) ? "unsupported" : "unavailable";
+      fail(unavailable?.message || (controller.state.mode === "compatible"
+        ? "该视频暂未提供兼容播放源"
+        : "当前浏览器无法播放原视频，且没有可用的兼容播放源"), unavailable, reason);
+      return;
+    }
+    if (!refresh && source.id === controller.state.activeSource?.id && !controller.state.error && !controller.state.loading) { changed(); return; }
+    await start(source, refresh);
+  }
+  async function requestManifest(path: string, epoch: number, refresh: boolean, sourceID?: string) {
+    const url = new URL(path, window.location.href);
+    if (url.origin !== window.location.origin) throw new Error("无效的播放源解析地址");
+    if (refresh) url.searchParams.set("refresh", "1");
+    if (sourceID) url.searchParams.set("source", sourceID);
+    const requestAbort = abort!;
+    const timeout = setTimeout(() => requestAbort.abort(), 25_000);
     try {
-      const url = new URL(playbackUrl, window.location.href);
-      if (url.origin !== window.location.origin)
-        throw new Error("无效的播放源解析地址");
-      if (refresh) url.searchParams.set("refresh", "1");
-      timeout = setTimeout(() => requestAbort.abort(), 25_000);
-      const response = await (options.fetch ?? window.fetch.bind(window))(
-        url.href,
-        {
-          credentials: "same-origin",
-          cache: "no-store",
-          signal: requestAbort.signal,
-        },
-      );
-      const data = (await response.json().catch(() => null)) as
-        (PlaybackSource & { message?: string }) | null;
-      if (disposed || epoch !== generation) return;
+      const response = await (options.fetch ?? window.fetch.bind(window))(url.href, {
+        credentials: "same-origin", cache: "no-store", signal: requestAbort.signal,
+      });
+      const data = await response.json().catch(() => null) as { sources?: PlaybackSource[]; message?: string; code?: string } | null;
+      if (disposed || epoch !== generation) return false;
       if (!response.ok) {
         const messages: Record<number, string> = {
-          401: "当前登录状态已失效，请重新登录",
-          403: "当前账号无权访问该视频",
-          404: "视频文件或分享凭证不存在、已失效",
+          401: "当前登录状态已失效，请重新登录", 403: "当前账号无权访问该视频",
+          404: "视频文件或分享凭证不存在、已失效", 410: "视频文件或分享凭证已失效",
           429: "网盘当前正在限流，请稍后重试",
         };
-        throw new Error(
-          data?.message ||
-            messages[response.status] ||
-            "获取播放源失败，请稍后重试",
-        );
+        const reason = response.status === 429 || data?.code === "drive_rate_limited" ? "throttled"
+          : [401, 403, 404, 410].includes(response.status) ||
+              ["drive_auth_failed", "drive_source_not_found"].includes(data?.code ?? "") ? "access" : "network";
+        throw new SourceRequestError(data?.message || messages[response.status] || "获取播放源失败，请稍后重试", reason);
       }
-      if (!data || !["hls", "native", "unavailable"].includes(data.type))
+      if (!data || !Array.isArray(data.sources) || !data.sources.length || data.sources.some((item) =>
+        !item || typeof item.id !== "string" || !item.id || typeof item.label !== "string" ||
+        !["original", "transcoded"].includes(item.kind) || !["file", "hls"].includes(item.protocol) ||
+        !["unknown", "ready", "processing", "unavailable"].includes(item.status) ||
+        (item.status === "ready" && (typeof item.url !== "string" || !item.url)) ||
+        (item.resolveUrl !== undefined && typeof item.resolveUrl !== "string"),
+      ) || new Set(data.sources.map((item) => item.id)).size !== data.sources.length)
         throw new Error("播放源返回了无效数据");
-      await load(data, epoch);
-    } catch (error) {
-      if (!disposed && epoch === generation)
-        fail(
-          error instanceof Error && error.name !== "AbortError"
-            ? error.message
-            : "获取网盘播放源超时，请稍后重试",
-        );
-    } finally {
-      clearTimeout(timeout);
-      if (epoch === generation) loading = false;
-    }
+      controller.state.sources = data.sources;
+      changed();
+      return true;
+    } finally { clearTimeout(timeout); }
   }
-  async function load(source: PlaybackSource, epoch = generation) {
-    if (disposed || epoch !== generation) return;
-    hls?.destroy();
-    hls = null;
-    current = source;
-    controller.error = null;
-    if (source.type === "unavailable") {
-      loading = false;
-      fail(source.message || "网盘暂未提供可用的 HLS 播放源，请稍后重新获取");
-      return;
-    }
-    if (!source.url) {
-      loading = false;
-      fail("视频源地址为空，请重新获取");
-      return;
-    }
-    controller.url = source.url;
-    if (source.type === "native") {
-      if (options.loadNative) options.loadNative(source.url);
-      else {
-        video.src = source.url;
-        video.load();
-      }
-      loading = false;
-      video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_READY));
-      return;
-    }
+  async function initialize(refresh: boolean) {
+    const epoch = begin();
     try {
-      const HlsCtor = await (options.loadHls?.() ??
-        import("hls.js/light").then((module) => module.default));
-      if (disposed || epoch !== generation) return;
-      if (HlsCtor.isSupported()) {
-        hls = new HlsCtor({
-          enableWorker: true,
-          backBufferLength: 30,
-          maxBufferLength: video.preload === "metadata" ? 2 : 15,
-          maxBufferSize: 4 * 1024 * 1024,
-          manifestLoadingMaxRetry: 1,
-          fragLoadingMaxRetry: 2,
-        });
-        hls.on(HlsCtor.Events.ERROR, (_event, data) => {
-          if (data.fatal && !disposed && epoch === generation)
-            void recover("网盘 HLS 播放失败，请重新获取播放源或稍后重试");
-        });
-        hls.loadSource(source.url);
-        hls.attachMedia(video);
-      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = source.url;
-        video.load();
-      } else throw new Error("当前浏览器不支持 HLS，请换用新版浏览器");
-      loading = false;
-      video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_READY));
+      if (playbackUrl) {
+        if (!await requestManifest(playbackUrl, epoch, refresh, refresh ? "original" : undefined)) return;
+      } else {
+        controller.state.sources = [{ id: "original", label: "原画播放", kind: "original", protocol: /\.m3u8(?:[?#]|$)/i.test(src) ? "hls" : "file", status: "ready", url: src }];
+      }
+      initialized = true;
+      await choose(false);
     } catch (error) {
-      loading = false;
-      if (!disposed && epoch === generation)
-        await recover(
-          error instanceof Error ? error.message : "HLS 播放组件加载失败",
-        );
+      if (!disposed && epoch === generation) fail(errorMessage(error), null, failureReason(error));
     }
   }
-  // Start synchronously for original files; metadata/HLS waits remain abortable.
-  void resolve(!!options.refresh);
+  async function start(selected: PlaybackSource, refresh: boolean, notice: string | null = null) {
+    const epoch = begin();
+    const previous = controller.state.activeSource;
+    try {
+      const expired = !!selected.expiresAt && Date.parse(selected.expiresAt) <= Date.now();
+      const resolver = selected.resolveUrl || (refresh ? playbackUrl : undefined);
+      if (resolver && (refresh || expired || selected.status === "unknown")) {
+        if (!await requestManifest(resolver, epoch, refresh || expired, selected.kind === "original" ? "original" : undefined)) return;
+        selected = controller.state.sources.find((item) => item.id === selected.id) ??
+          controller.state.sources.find((item) => item.kind === selected.kind && item.status === "ready" && !failed.has(item.id)) ?? selected;
+      }
+      if (selected.kind === "original" && originalURL) selected = { ...selected, url: originalURL };
+      if (selected.status !== "ready" || !selected.url) {
+        throw new SourceRequestError(selected.message || "该播放源暂不可用，请重新获取",
+          selected.status === "processing" ? "processing" : "unavailable");
+      }
+      controller.state.activeSource = selected;
+      controller.url = selected.url;
+      if (controller.state.mode === "auto" && selected.kind === "transcoded" && !previous)
+        notice = "兼容播放";
+      if (selected.protocol === "file") {
+        if (options.loadNative) options.loadNative(selected.url);
+        else { video.src = selected.url; video.load(); }
+      } else {
+        const HlsCtor = await (options.loadHls?.() ?? import("hls.js/light").then((module) => module.default));
+        if (disposed || epoch !== generation) return;
+        if (HlsCtor.isSupported()) {
+          hls = new HlsCtor({
+            enableWorker: true, backBufferLength: 30,
+            maxBufferLength: video.preload === "metadata" ? 2 : 15,
+            maxBufferSize: 4 * 1024 * 1024,
+            manifestLoadingMaxRetry: 1, fragLoadingMaxRetry: 2,
+          });
+          hls.on(HlsCtor.Events.ERROR, (_event, data) => {
+            if (!data.fatal || disposed || epoch !== generation) return;
+            const status = data.response?.code;
+            void recover(status === 429 ? "throttled" : data.type === "mediaError" ? "unsupported" : "network", "兼容播放失败");
+          });
+          hls.loadSource(selected.url);
+          hls.attachMedia(video);
+        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+          video.src = selected.url;
+          video.load();
+        } else throw new SourceRequestError("当前浏览器不支持兼容播放，请换用新版浏览器", "unsupported");
+      }
+      if (disposed || epoch !== generation) return;
+      controller.state.loading = false;
+      controller.state.notice = notice;
+      changed();
+      video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_READY));
+    } catch (error) {
+      if (disposed || epoch !== generation) return;
+      failed.add(selected.id);
+      const reason = failureReason(error);
+      if (!stopsRecovery(reason) && controller.state.mode === "auto") {
+        const next = candidate();
+        if (next) { await start(next, false); return; }
+      }
+      fail(errorMessage(error), selected, reason);
+    }
+  }
+  function failureReason(error: unknown): PlaybackFailureReason {
+    return error instanceof SourceRequestError ? error.reason
+      : error instanceof TypeError || (error instanceof Error && error.name === "AbortError") ? "network" : "other";
+  }
+  function errorMessage(error: unknown) {
+    return error instanceof Error && error.name !== "AbortError" ? error.message : "获取播放源超时，请稍后重试";
+  }
+  void initialize(!!options.refresh);
 }

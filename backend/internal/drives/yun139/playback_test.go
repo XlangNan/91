@@ -37,17 +37,17 @@ func TestPlaybackUsesOfficialHLSWithoutFetchingMediaOrDownloadLinks(t *testing.T
 			t.Errorf("playback metadata unexpectedly fetched %s", r.URL.Path)
 		}
 	})
-	links, err := d.PlaybackLinks(context.Background(), "file")
+	links, err := d.PlaybackSources(context.Background(), "file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if links == nil || links.HLS == nil || links.HLS.URL != "https://hls.example/playlist.m3u8?sign=media-only" {
+	if len(links) != 1 || links[0].Link == nil || links[0].Link.URL != "https://hls.example/playlist.m3u8?sign=media-only" {
 		t.Fatalf("missing HLS source: %+v", links)
 	}
-	if len(links.HLS.Headers) != 0 || !links.HLS.ClientRedirectSafe || !links.HLS.Expires.After(time.Now()) || time.Until(links.HLS.Expires) > 2*time.Minute {
-		t.Fatalf("unsafe or unbounded browser link: %+v", links.HLS)
+	if len(links[0].Link.Headers) != 0 || !links[0].Link.ClientRedirectSafe || !links[0].Link.Expires.After(time.Now()) || time.Until(links[0].Link.Expires) > 2*time.Minute {
+		t.Fatalf("unsafe or unbounded browser link: %+v", links[0].Link)
 	}
-	if links.Original != nil || previewCalls != 1 || downloadCalls != 0 {
+	if previewCalls != 1 || downloadCalls != 0 {
 		t.Fatal("HLS resolution unnecessarily requested an original download")
 	}
 	original, err := d.StreamURL(context.Background(), "file")
@@ -56,7 +56,7 @@ func TestPlaybackUsesOfficialHLSWithoutFetchingMediaOrDownloadLinks(t *testing.T
 	}
 }
 
-func TestPlaybackFallsBackToOriginalWhileCloudPreviewIsUnavailable(t *testing.T) {
+func TestPlaybackReportsCloudAvailabilityWithoutResolvingOriginal(t *testing.T) {
 	for _, status := range []string{"Pending", "Running", "Failed", "", "Finished"} {
 		t.Run(status, func(t *testing.T) {
 			downloadCalls := 0
@@ -75,8 +75,12 @@ func TestPlaybackFallsBackToOriginalWhileCloudPreviewIsUnavailable(t *testing.T)
 					t.Errorf("unexpected endpoint %s", r.URL.Path)
 				}
 			})
-			links, err := d.PlaybackLinks(context.Background(), "file")
-			if err != nil || links == nil || links.HLS != nil || links.Original == nil || links.Original.URL != "https://original.example/video.mp4" || downloadCalls != 1 {
+			links, err := d.PlaybackSources(context.Background(), "file")
+			wantStatus := "unavailable"
+			if status == "Pending" || status == "Running" {
+				wantStatus = "processing"
+			}
+			if err != nil || len(links) != 1 || links[0].Link != nil || links[0].Status != wantStatus || downloadCalls != 0 {
 				t.Fatalf("fallback = %+v, %v", links, err)
 			}
 		})
@@ -97,7 +101,7 @@ func TestPlaybackRejectsUnsafeOrMismatchedPreviewResponses(t *testing.T) {
 				}
 				reply(w, map[string]any{"fileId": tc.fileID, "previewInfo": map[string]string{"status": "Finished", "url": tc.url}})
 			})
-			links, err := d.PlaybackLinks(context.Background(), "file")
+			links, err := d.PlaybackSources(context.Background(), "file")
 			if err == nil || links != nil || strings.Contains(err.Error(), "account-secret") {
 				t.Fatalf("unsafe preview accepted or leaked: %+v, %v", links, err)
 			}
@@ -114,24 +118,24 @@ func TestPlaybackPreservesProviderErrorsAndCancellation(t *testing.T) {
 		{http.StatusServiceUnavailable, drives.ProviderErrorUnavailable},
 	} {
 		d := testDriver(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(tc.status) })
-		_, err := d.PlaybackLinks(context.Background(), "file")
+		_, err := d.PlaybackSources(context.Background(), "file")
 		var providerErr *drives.ProviderError
 		if !errors.As(err, &providerErr) || providerErr.Kind != tc.kind {
 			t.Fatalf("HTTP %d error = %v", tc.status, err)
 		}
 	}
 	d := testDriver(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) })
-	if _, err := d.PlaybackLinks(context.Background(), "file"); err == nil {
+	if _, err := d.PlaybackSources(context.Background(), "file"); err == nil {
 		t.Fatal("lost rate limit")
 	} else if _, ok := drives.RateLimitRetryAfter(err); !ok {
 		t.Fatalf("rate limit classification lost: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := d.PlaybackLinks(ctx, "file"); !errors.Is(err, context.Canceled) {
+	if _, err := d.PlaybackSources(ctx, "file"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled resolution = %v", err)
 	}
-	if _, err := d.PlaybackLinks(context.Background(), " "); err == nil {
+	if _, err := d.PlaybackSources(context.Background(), " "); err == nil {
 		t.Fatal("accepted empty file ID")
 	}
 }
@@ -152,17 +156,17 @@ func TestPlaybackUsesSharedCacheAndRefreshFetchesNewHLS(t *testing.T) {
 	}
 	var originalURL string
 	for range 2 {
-		links, err := resolver.PlaybackLinks(context.Background(), d.ID(), "file", false)
-		if err != nil || links.HLS == nil {
+		links, err := resolver.PlaybackSources(context.Background(), d.ID(), "file", false)
+		if err != nil || links[0].Link == nil {
 			t.Fatalf("resolve = %+v, %v", links, err)
 		}
-		originalURL = links.HLS.URL
+		originalURL = links[0].Link.URL
 	}
 	if calls != 1 {
 		t.Fatalf("repeated preview requests bypassed shared cache: %d", calls)
 	}
-	links, err := resolver.PlaybackLinks(context.Background(), d.ID(), "file", true)
-	if err != nil || links.HLS.URL == originalURL || calls != 2 {
+	links, err := resolver.PlaybackSources(context.Background(), d.ID(), "file", true)
+	if err != nil || links[0].Link.URL == originalURL || calls != 2 {
 		t.Fatalf("refresh reused expired source: calls=%d err=%v", calls, err)
 	}
 }

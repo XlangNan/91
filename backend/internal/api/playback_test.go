@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,16 +19,18 @@ import (
 
 type apiPlaybackDrive struct {
 	drives.Drive
-	links *drives.PlaybackLinks
-	err   error
+	sources []drives.PlaybackSource
+	err     error
+	calls   int
 }
 
 func (d *apiPlaybackDrive) Kind() string { return "wopan" }
-func (d *apiPlaybackDrive) PlaybackLinks(context.Context, string) (*drives.PlaybackLinks, error) {
-	return d.links, d.err
+func (d *apiPlaybackDrive) PlaybackSources(context.Context, string) ([]drives.PlaybackSource, error) {
+	d.calls++
+	return d.sources, d.err
 }
 
-func TestPlaybackRouteSelectionAndAuthentication(t *testing.T) {
+func TestPlaybackManifestAndLazyCloudResolution(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -46,65 +49,100 @@ func TestPlaybackRouteSelectionAndAuthentication(t *testing.T) {
 	if err := cat.CreateSession(ctx, "login", time.Hour, createSessionUser(t, cat)); err != nil {
 		t.Fatal(err)
 	}
-	media := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("playback resolution fetched media bytes") }))
+	media := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("metadata fetched media bytes") }))
 	defer media.Close()
-	link := func(path string) *drives.StreamLink {
-		return &drives.StreamLink{URL: media.URL + path, ClientRedirectSafe: true}
-	}
-	d := &apiPlaybackDrive{}
+	d := &apiPlaybackDrive{err: errors.New("preview unavailable")}
 	registry := proxy.NewRegistry()
 	registry.Set("wo", d)
 	s := &Server{Catalog: cat, Proxy: proxy.New(registry)}
 	router := chi.NewRouter()
 	s.RegisterRoutes(router, &auth.Authenticator{Catalog: cat})
-	unauth := httptest.NewRecorder()
-	router.ServeHTTP(unauth, httptest.NewRequest("GET", "/api/video/ts/playback", nil))
-	if unauth.Code != 401 {
-		t.Fatalf("unauth status %d", unauth.Code)
-	}
-	for _, tt := range []struct {
-		name, ext, want string
-		hls             bool
-		err             error
-	}{
-		{"ts HLS", "ts", "hls", true, nil}, {"ts unavailable", "ts", "unavailable", false, nil}, {"mp4 original", "mp4", "native", false, nil}, {"mp4 HLS fallback", "mp4", "hls", true, nil}, {"expired login", "ts", "", false, errors.New("request failed with rsp_code: 1001,rep_desc: 无效登录信息")},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			d.links = &drives.PlaybackLinks{Original: link("/original." + tt.ext)}
-			d.err = tt.err
-			if tt.hls {
-				d.links.HLS = link("/index.m3u8")
-			}
-			req := httptest.NewRequest("GET", "/api/video/"+tt.ext+"/playback?refresh=1", nil)
+	request := func(path string, authorized bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		if authorized {
 			req.AddCookie(&http.Cookie{Name: "vs_admin", Value: "login"})
-			rr := httptest.NewRecorder()
-			router.ServeHTTP(rr, req)
-			if tt.err != nil {
-				var r struct {
-					Code string `json:"code"`
-				}
-				_ = json.Unmarshal(rr.Body.Bytes(), &r)
-				if rr.Code != 502 || r.Code != "drive_auth_failed" {
-					t.Fatalf("auth response=%d %s", rr.Code, rr.Body.String())
-				}
-				return
+		}
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		return rr
+	}
+	decode := func(rr *httptest.ResponseRecorder) PlaybackManifestDTO {
+		t.Helper()
+		var manifest PlaybackManifestDTO
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &manifest); err != nil {
+			t.Fatal(err)
+		}
+		if rr.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("metadata must not be HTTP cached")
+		}
+		return manifest
+	}
+	for _, path := range []string{"/api/video/ts/playback", "/api/video/ts/playback?source=cloud"} {
+		if rr := request(path, false); rr.Code != http.StatusUnauthorized {
+			t.Fatalf("unauth status=%d", rr.Code)
+		}
+	}
+	for _, ext := range []string{"ts", "mp4"} {
+		manifest := decode(request("/api/video/"+ext+"/playback", true))
+		if len(manifest.Sources) != 2 || manifest.Sources[0].ID != "original" || manifest.Sources[0].URL != "/p/stream/wo/"+ext || manifest.Sources[1].Status != "unknown" || !strings.HasSuffix(manifest.Sources[1].ResolveURL, "?source=cloud") {
+			t.Fatalf("manifest=%+v", manifest)
+		}
+		decode(request("/api/video/"+ext+"/playback?source=original&refresh=1", true))
+	}
+	if d.calls != 0 {
+		t.Fatal("original playback waited for cloud resolution")
+	}
+	for _, tc := range []struct {
+		name, status string
+		link         *drives.StreamLink
+	}{
+		{"ready", "ready", &drives.StreamLink{URL: media.URL + "/index.m3u8", ClientRedirectSafe: true, Expires: now.Add(time.Minute)}},
+		{"processing", "processing", nil},
+		{"unavailable", "unavailable", nil},
+		{"secret headers", "ready", &drives.StreamLink{URL: media.URL + "/index.m3u8", ClientRedirectSafe: true, Headers: http.Header{"Cookie": {"account-secret"}}}},
+		{"unsafe credentials", "ready", &drives.StreamLink{URL: "https://account-secret@example.com/index.m3u8", ClientRedirectSafe: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d.err = nil
+			d.sources = []drives.PlaybackSource{{ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: tc.status, Link: tc.link}}
+			manifest := decode(request("/api/video/ts/playback?source=cloud&refresh=1", true))
+			if len(manifest.Sources) != 2 || manifest.Sources[0].URL != "/p/stream/wo/ts" {
+				t.Fatalf("cloud removed original: %+v", manifest)
 			}
-			var source PlaybackSourceDTO
-			if err := json.Unmarshal(rr.Body.Bytes(), &source); err != nil {
-				t.Fatal(err)
+			cloud := manifest.Sources[1]
+			want := tc.status
+			if strings.HasPrefix(tc.name, "secret") || strings.HasPrefix(tc.name, "unsafe") {
+				want = "unavailable"
 			}
-			if source.Type != tt.want {
-				t.Fatalf("source=%+v", source)
+			if cloud.Status != want {
+				t.Fatalf("cloud=%+v", cloud)
 			}
-			if tt.ext == "ts" && source.Fallback != nil {
-				t.Fatal("TS must not fall back to raw bytes")
+			if want != "ready" && cloud.URL != "" {
+				t.Fatal("unavailable link exposed")
 			}
-			if tt.hls && tt.ext == "mp4" && (source.Fallback == nil || source.Fallback.Type != "native") {
-				t.Fatal("MP4 fallback missing")
-			}
-			if rr.Header().Get("Cache-Control") != "no-store" {
-				t.Fatal("signed metadata must not be HTTP cached")
+			if strings.Contains(request("/api/video/ts/playback", true).Body.String(), "account-secret") {
+				t.Fatal("account credential leaked")
 			}
 		})
 	}
+	d.err = errors.New("request failed with rsp_code: 1001,rep_desc: 无效登录信息")
+	if rr := request("/api/video/ts/playback?source=cloud&refresh=1", true); rr.Code != 502 || !strings.Contains(rr.Body.String(), "drive_auth_failed") {
+		t.Fatalf("provider error lost: %d %s", rr.Code, rr.Body.String())
+	}
+	decode(request("/api/video/ts/playback", true))
+	if rr := request("/api/video/mp4/playback?source=missing", true); rr.Code != 400 {
+		t.Fatalf("invalid source status=%d", rr.Code)
+	}
+	registry.Set("wo", &apiOriginalOnlyDrive{})
+	manifest := decode(request("/api/video/mp4/playback", true))
+	if len(manifest.Sources) != 1 || manifest.Sources[0].ID != "original" {
+		t.Fatalf("original-only drive=%+v", manifest)
+	}
 }
+
+type apiOriginalOnlyDrive struct{ drives.Drive }
+
+func (*apiOriginalOnlyDrive) Kind() string { return "webdav" }
