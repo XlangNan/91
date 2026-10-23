@@ -115,7 +115,7 @@ test("admin login card fits narrow phone screens", () => {
   assert.match(body, /box-sizing\s*:\s*border-box/);
 });
 
-test("admin password fields use shared PasswordInput with eye toggle", () => {
+test("admin login masks passwords and drive credentials display plain text", () => {
   const passwordInputSource = readFileSync(
     new URL("../src/admin/PasswordInput.tsx", import.meta.url),
     "utf8"
@@ -137,9 +137,7 @@ test("admin password fields use shared PasswordInput with eye toggle", () => {
   assert.match(loginPageSource, /<PasswordInput[\s\S]*?id="admin-login-password"/);
   assert.match(loginPageSource, /<PasswordInput[\s\S]*?id="admin-login-password-confirm"/);
   assert.doesNotMatch(loginPageSource, /type="password"/);
-  assert.match(driveFormSource, /import \{ PasswordInput \} from "\.\.\/PasswordInput"/);
-  assert.match(driveFormSource, /isSecretCredential\(f\.key\) \? \(/);
-  assert.match(driveFormSource, /<PasswordInput[\s\S]*?id=\{`\$\{idPrefix\}-credential-\$\{f\.key\}`\}/);
+  assert.doesNotMatch(driveFormSource, /PasswordInput|isSecretCredential/);
   assert.doesNotMatch(usersPageSource, /type="password"/);
   assert.doesNotMatch(driveFormSource, /type="password"/);
 });

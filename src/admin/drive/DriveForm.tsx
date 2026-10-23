@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { PasswordInput } from "../PasswordInput";
 import { QuarkQRCodeLogin } from "./QuarkQRCodeLogin";
 import { P115QRCodeLogin } from "./P115QRCodeLogin";
 import { P123QRCodeLogin } from "./P123QRCodeLogin";
@@ -290,14 +289,6 @@ export function DriveForm({
                         onChange={(e) => setCred(f.key, e.target.value)}
                         required={f.required && !isEdit}
                       />
-                    ) : isSecretCredential(f.key) ? (
-                      <PasswordInput
-                        id={`${idPrefix}-credential-${f.key}`}
-                        placeholder={f.placeholder}
-                        value={form.creds[f.key] ?? ""}
-                        onChange={(e) => setCred(f.key, e.target.value)}
-                        required={f.required && !isEdit}
-                      />
                     ) : (
                       <input
                         id={`${idPrefix}-credential-${f.key}`}
@@ -331,8 +322,4 @@ export function DriveForm({
       )}
     </div>
   );
-}
-
-function isSecretCredential(key: string): boolean {
-  return /password|token|secret/i.test(key);
 }
