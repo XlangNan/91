@@ -54,7 +54,7 @@ type SourceController = {
   state: PlaybackState;
   retry(): void;
   selectMode(mode: PlaybackMode): void;
-  useOriginalURL(url: string): void;
+  setOriginalDelivery(url: string | null): void;
   setActive(active: boolean): void;
   destroy(): void;
 };
@@ -92,11 +92,11 @@ export function selectPlaybackMode(video: HTMLVideoElement, mode: PlaybackMode) 
   controller.selectMode(mode);
   return true;
 }
-/** Select an original-file delivery route, e.g. same-origin canvas playback. */
-export function useOriginalVideoSource(video: HTMLVideoElement, url: string) {
+/** Override original-file delivery without changing the selected playback mode. */
+export function setOriginalVideoDelivery(video: HTMLVideoElement, url: string | null) {
   const controller = controllers.get(video);
   if (!controller) return false;
-  controller.useOriginalURL(url);
+  controller.setOriginalDelivery(url);
   return true;
 }
 export function disposeVideoSource(video: HTMLVideoElement) {
@@ -188,12 +188,11 @@ export function attachVideoSource(
       changed();
       if (initialized) void choose(false);
     },
-    useOriginalURL(url) {
+    setOriginalDelivery(url) {
+      if (originalURL === url) return;
       originalURL = url;
-      controller.state.mode = "original";
-      controller.state.notice = null;
-      failed.clear();
-      if (initialized) {
+      if (initialized && !controller.state.loading && !controller.state.error &&
+          controller.state.activeSource?.kind === "original" && controller.state.activeSource.protocol === "file") {
         const source = controller.state.sources.find((item) => item.kind === "original");
         if (source) void start(source, false);
       }

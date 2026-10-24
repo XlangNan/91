@@ -5,7 +5,8 @@ import { createElement } from "react";
 import { cleanup, render, act } from "@testing-library/react";
 import Artplayer from "artplayer";
 import { VideoPlayer } from "../src/components/VideoPlayer";
-import { playbackSourceState, selectPlaybackMode } from "../src/lib/videoSource";
+import { playbackSourceState, retryVideoSource, selectPlaybackMode } from "../src/lib/videoSource";
+import { TripleScreenRenderer } from "../src/lib/tripleScreen";
 
 for (const name of ["Element", "HTMLMediaElement", "HTMLCanvasElement", "Image"] as const) {
   Object.defineProperty(globalThis, name, { configurable: true, value: window[name] });
@@ -43,6 +44,118 @@ afterEach(() => {
   Artplayer.RECONNECT_SLEEP_TIME = reconnectDelay;
 });
 const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+
+async function tripleScreenPlayer(src = "/p/stream/115/file") {
+  const requests: string[] = [];
+  const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: src, mediaType: "video/mp4" };
+  const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
+  window.fetch = (async (path) => {
+    requests.push(String(path));
+    if (String(path).includes("/p/stream/")) return new Response(null, { status: 206 });
+    return new Response(JSON.stringify({ sources: [original, String(path).includes("source=cloud")
+      ? { ...cloud, status: "ready", url: "/p/hls/one/session/index.m3u8" } : cloud] }), { status: 200 });
+  }) as typeof fetch;
+  const view = render(createElement(VideoPlayer, { src, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
+  await settle();
+  const video = view.container.querySelector("video")!;
+  const control = view.container.querySelector<HTMLElement>("[data-triple-screen-control]")!;
+  Object.defineProperties(video, {
+    videoWidth: { configurable: true, value: 720 }, videoHeight: { configurable: true, value: 1280 },
+    readyState: { configurable: true, value: 4 },
+  });
+  const frameReady = async () => {
+    await act(async () => {
+      video.dispatchEvent(new Event("loadedmetadata"));
+      video.dispatchEvent(new Event("loadeddata"));
+    });
+    await settle();
+  };
+  await frameReady();
+  return { view, video, control, requests, frameReady };
+}
+
+test("triple screen uses the active compatible source even when its video URL is a blob", async (t) => {
+  const enable = t.mock.method(TripleScreenRenderer.prototype, "enable", () => true);
+  const env = await tripleScreenPlayer();
+  await act(async () => { selectPlaybackMode(env.video, "compatible"); });
+  await settle();
+  env.video.src = "blob:http://localhost/compatible-video";
+  await env.frameReady();
+  const requests = env.requests.length;
+  await act(async () => { env.control.click(); });
+  await settle();
+  assert.equal(playbackSourceState(env.video)?.mode, "compatible");
+  assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
+  assert.equal(env.video.src, "blob:http://localhost/compatible-video");
+  assert.equal(env.requests.length, requests);
+  assert.equal(env.control.getAttribute("aria-pressed"), "true");
+  assert.equal(enable.mock.callCount(), 1);
+  await act(async () => { env.control.click(); });
+  assert.equal(env.control.getAttribute("aria-pressed"), "false");
+  assert.equal(playbackSourceState(env.video)?.mode, "compatible");
+});
+
+test("triple screen restores rendering after compatibility refresh and both playback mode switches", async (t) => {
+  const enable = t.mock.method(TripleScreenRenderer.prototype, "enable", () => true);
+  const env = await tripleScreenPlayer();
+  await act(async () => { selectPlaybackMode(env.video, "compatible"); });
+  await settle();
+  await env.frameReady();
+  await act(async () => { env.control.click(); });
+  assert.equal(enable.mock.callCount(), 1);
+  await act(async () => { retryVideoSource(env.video); });
+  await settle();
+  await env.frameReady();
+  assert.equal(playbackSourceState(env.video)?.mode, "compatible");
+  assert.equal(enable.mock.callCount(), 2);
+  await act(async () => { selectPlaybackMode(env.video, "original"); });
+  await settle();
+  await env.frameReady();
+  assert.equal(playbackSourceState(env.video)?.mode, "original");
+  assert.match(env.video.src, /tripleScreenRelay=1/);
+  await env.frameReady();
+  assert.equal(env.control.getAttribute("aria-pressed"), "true");
+  await act(async () => { selectPlaybackMode(env.video, "compatible"); });
+  await settle();
+  await env.frameReady();
+  assert.equal(playbackSourceState(env.video)?.mode, "compatible");
+  assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
+  assert.equal(env.control.getAttribute("aria-pressed"), "true");
+  assert.equal(enable.mock.callCount(), 4);
+});
+
+test("original relay preserves smart selection and can recover to HLS without losing triple screen", async (t) => {
+  const enable = t.mock.method(TripleScreenRenderer.prototype, "enable", () => true);
+  const env = await tripleScreenPlayer();
+  env.video.currentTime = 37;
+  await act(async () => { env.control.click(); });
+  await settle();
+  assert.equal(playbackSourceState(env.video)?.mode, "auto");
+  assert.match(env.video.src, /tripleScreenRelay=1/);
+  await env.frameReady();
+  assert.equal(env.video.currentTime, 37);
+  Object.defineProperty(env.video, "error", { configurable: true, value: { code: 3 } });
+  await act(async () => { env.video.dispatchEvent(new Event("error")); });
+  await settle();
+  Object.defineProperty(env.video, "error", { configurable: true, value: null });
+  await env.frameReady();
+  assert.equal(playbackSourceState(env.video)?.mode, "auto");
+  assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
+  assert.equal(env.control.getAttribute("aria-pressed"), "true");
+  assert.equal(enable.mock.callCount(), 2);
+});
+
+test("shared compatible playback enables triple screen without selecting the shared original stream", async (t) => {
+  t.mock.method(TripleScreenRenderer.prototype, "enable", () => true);
+  const env = await tripleScreenPlayer("/p/share/share-token/stream");
+  await act(async () => { selectPlaybackMode(env.video, "compatible"); });
+  await settle();
+  await env.frameReady();
+  await act(async () => { env.control.click(); });
+  assert.equal(playbackSourceState(env.video)?.mode, "compatible");
+  assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
+  assert.doesNotMatch(env.video.src, /tripleScreenRelay/);
+});
 
 test("ArtPlayer playback selector uses the shared controller without reconnecting an old source", async () => {
   const urls: URL[] = [];

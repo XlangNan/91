@@ -9,7 +9,7 @@ import {
   playbackSourceURL,
   retryVideoSource,
   selectPlaybackMode,
-  useOriginalVideoSource,
+  setOriginalVideoDelivery,
   setVideoSourceActive,
   type PlaybackSource,
 } from "../src/lib/videoSource.ts";
@@ -504,18 +504,55 @@ test("expired resolved links are refreshed before media loading", async () => {
   assert.equal(FakeHls.instances[0].url, readyCloud.url);
 });
 
-test("a canvas delivery override selects original through the same controller", async () => {
-  const { video } = setup({ mode: "compatible" });
+test("a canvas delivery override preserves smart selection, playback position and play intent", async () => {
+  const { video } = setup();
   await settle();
   video.dispatchEvent(new Event("loadedmetadata"));
   video.currentTime = 33;
-  assert.equal(useOriginalVideoSource(video, "/p/stream/wo/file?tripleScreenRelay=1"), true);
+  await video.play();
+  assert.equal(setOriginalVideoDelivery(video, "/p/stream/wo/file?tripleScreenRelay=1"), true);
   await settle();
   video.dispatchEvent(new Event("loadedmetadata"));
-  assert.equal(playbackSourceState(video)?.mode, "original");
+  assert.equal(playbackSourceState(video)?.mode, "auto");
   assert.match(video.src, /tripleScreenRelay=1/);
   assert.equal(video.currentTime, 33);
-  assert.equal(FakeHls.instances[0].destroyed, true);
+  assert.equal(video.paused, false);
+  setOriginalVideoDelivery(video, null);
+  await settle();
+  video.dispatchEvent(new Event("loadedmetadata"));
+  assert.equal(new URL(video.src).pathname, "/p/stream/wo/file");
+  assert.equal(new URL(video.src).search, "");
+  assert.equal(video.currentTime, 33);
+  assert.equal(playbackSourceState(video)?.mode, "auto");
+});
+
+test("changing original delivery during compatibility playback leaves HLS attached", async () => {
+  const { video, urls } = setup({ mode: "compatible" });
+  await settle();
+  const calls = urls.length;
+  const hls = FakeHls.instances[0];
+  setOriginalVideoDelivery(video, "/p/stream/wo/file?tripleScreenRelay=1");
+  await settle();
+  assert.equal(playbackSourceState(video)?.mode, "compatible");
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud");
+  assert.equal(playbackSourceURL(video), readyCloud.url);
+  assert.equal(hls.destroyed, false);
+  assert.equal(urls.length, calls);
+  setOriginalVideoDelivery(video, null);
+  await settle();
+  assert.equal(hls.destroyed, false);
+});
+
+test("a relayed original can still fall back to compatible playback in smart mode", async () => {
+  const { video } = setup();
+  await settle();
+  setOriginalVideoDelivery(video, "/p/stream/wo/file?tripleScreenRelay=1");
+  await settle();
+  mediaError(video);
+  await settle();
+  assert.equal(playbackSourceState(video)?.mode, "auto");
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud");
+  assert.equal(FakeHls.instances.length, 1);
 });
 
 test("unknown-source manifests cannot silently play the raw URL", async () => {
