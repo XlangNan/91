@@ -837,7 +837,7 @@
   gap: 5px;
   height: var(--vd-meta-chip-height);
   padding: 0 var(--space-2);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   background: var(--bg-elevated);
   border: 1px solid var(--border-default);
   color: var(--text-default);
