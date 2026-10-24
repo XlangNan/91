@@ -11,17 +11,14 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/video-site/backend/internal/hlsplaylist"
 )
 
 const maxHLSPlaylistBytes = 4 * 1024 * 1024
-
-var hlsURIAttribute = regexp.MustCompile(`([:,])URI="([^"]*)"`)
 
 // hlsRelay keeps all source requests in the importer's HTTP client. FFmpeg
 // receives local URLs for playlists, segments, initialization maps and keys,
@@ -181,38 +178,7 @@ func (h *hlsRelay) rewritePlaylist(playlist string, base *url.URL) (string, erro
 		}
 		return h.resourceURL(base.ResolveReference(reference))
 	}
-	lines := strings.Split(playlist, "\n")
-	for i, line := range lines {
-		text := strings.TrimSpace(line)
-		if text == "" {
-			continue
-		}
-		if !strings.HasPrefix(text, "#") {
-			local, err := resolve(text)
-			if err != nil {
-				return "", err
-			}
-			lines[i] = local
-			continue
-		}
-		if !strings.HasPrefix(text, "#EXT") {
-			continue
-		}
-		var rewriteErr error
-		lines[i] = hlsURIAttribute.ReplaceAllStringFunc(line, func(attribute string) string {
-			parts := hlsURIAttribute.FindStringSubmatch(attribute)
-			local, err := resolve(parts[2])
-			if err != nil {
-				rewriteErr = err
-				return attribute
-			}
-			return parts[1] + `URI="` + local + `"`
-		})
-		if rewriteErr != nil {
-			return "", rewriteErr
-		}
-	}
-	return strings.Join(lines, "\n"), nil
+	return hlsplaylist.Rewrite(playlist, resolve)
 }
 
 func (h *hlsRelay) recordError(err error) {

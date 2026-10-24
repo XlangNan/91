@@ -63,8 +63,9 @@ type GenerationStreamScanResetter interface {
 
 // PlaybackSourceProvider supplies optional cloud playback sources. The common
 // playback layer always supplies the original through StreamURL independently.
-// Links must authorize browser requests without account headers and support CORS
-// for HLS playlists, segments and keys. Background generation is a separate API.
+// Direct links must authorize browser requests without account headers and
+// support CORS. HLS sources that require server delivery explicitly supply a
+// relay policy. Background generation is a separate API.
 type PlaybackSourceProvider interface {
 	PlaybackSources(context.Context, string) ([]PlaybackSource, error)
 }
@@ -78,6 +79,17 @@ type PlaybackSource struct {
 	Link      *StreamLink
 	MediaType string
 	Message   string
+	Relay     *HLSRelay
+}
+
+// HLSRelay opts a playback source into authenticated server delivery. When set,
+// Playlist is the resolved master, with relative URIs based on Link.URL.
+// Account credentials must not be included in Link.Headers. AllowedHosts accepts
+// exact authorities (including ports), or a leading dot for a domain and its
+// subdomains. Every resource and redirect must satisfy this provider policy.
+type HLSRelay struct {
+	Playlist     string
+	AllowedHosts []string
 }
 
 // Uploader is the optional write capability of a drive. Callers that produce

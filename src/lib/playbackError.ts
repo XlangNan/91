@@ -60,7 +60,8 @@ export async function diagnosePlaybackFailure(
 
     const serverError = await readServerError(response);
     // Provider failures use a structured code inside HTTP 502 responses.
-    const kind = response.status === 429 || serverError.code === "drive_rate_limited"
+    const kind = serverError.code === "playback_source_expired" ? "network"
+      : response.status === 429 || serverError.code === "drive_rate_limited"
       ? "throttled"
       : [401, 403, 404, 410].includes(response.status) ||
           ["drive_auth_failed", "drive_source_not_found"].includes(serverError.code)
@@ -105,6 +106,7 @@ export function isSameOriginPlaybackURL(sourceURL: URL, pageURL: URL) {
   if (sourceURL.origin !== pageURL.origin) return false;
   return (
     sourceURL.pathname.startsWith("/p/stream/") ||
+    sourceURL.pathname.startsWith("/p/hls/") ||
     sourceURL.pathname.startsWith("/p/upload/") ||
     sourceURL.pathname.startsWith("/p/share/")
   );

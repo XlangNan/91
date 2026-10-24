@@ -26,6 +26,72 @@ func playbackJSONResponse(r *http.Request, body string) *http.Response {
 	}
 }
 
+func TestCloudPlaybackRetainsMasterAndIsIndependentOfGenerationSession(t *testing.T) {
+	const cookie = "UID=u;CID=c;SEID=s"
+	const master = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",URI=\"https://cpats01.115.com/audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"audio\"\nhttps://cpats01.115.com/low.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2,AUDIO=\"audio\"\nhttps://cpats01.115.com/high.m3u8\n"
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("Cookie") != cookie || r.UserAgent() != p115HLSUserAgent || r.Referer() != p115HLSReferer {
+			t.Errorf("incorrect master headers: %v", r.Header)
+		}
+		if strings.Contains(r.URL.Path, "rejected") {
+			io.WriteString(w, `{"state":false,"error":"video not ready"}`)
+			return
+		}
+		io.WriteString(w, master)
+	}))
+	defer server.Close()
+	d := New(Config{ID: "115", Cookie: cookie})
+	d.hlsClient, d.hlsMasterBaseURL = server.Client(), server.URL
+	d.rememberPickCode("rejected", "rejected")
+	d.rememberPickCode("video", "video")
+	_, _ = d.GenerationStreamURL(context.Background(), "rejected", false)
+	for range 2 {
+		sources, err := d.PlaybackSources(context.Background(), "video")
+		if err != nil || len(sources) != 1 || sources[0].Status != "ready" {
+			t.Fatalf("playback inherited scan rejection: %+v %v", sources, err)
+		}
+		source := sources[0]
+		if source.Relay == nil || source.Relay.Playlist != master || source.Link.Headers.Get("Cookie") != "" || source.Link.ClientRedirectSafe || source.Link.Headers.Get("User-Agent") != p115HLSUserAgent {
+			t.Fatalf("invalid relay source: %+v", source)
+		}
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("playback must use the proxy cache, calls=%d", calls.Load())
+	}
+}
+
+func TestCloudPlaybackPreservesThrottleCancellationAndUnavailable(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden, http.StatusTooManyRequests} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			io.WriteString(w, `{"state":false,"error":"not available"}`)
+		}))
+		d := New(Config{ID: "115"})
+		d.hlsClient, d.hlsMasterBaseURL = server.Client(), server.URL
+		d.rememberPickCode("video", "pick")
+		sources, err := d.PlaybackSources(context.Background(), "video")
+		server.Close()
+		if status == 429 {
+			if _, limited := drives.RateLimitRetryAfter(err); !limited {
+				t.Fatalf("throttle lost: %v", err)
+			}
+			continue
+		}
+		if err != nil || len(sources) != 1 || sources[0].Status != "unavailable" || sources[0].Link != nil {
+			t.Fatalf("status=%d sources=%+v err=%v", status, sources, err)
+		}
+	}
+	d := New(Config{ID: "115"})
+	d.rememberPickCode("video", "pick")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := d.PlaybackSources(ctx, "video"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation lost: %v", err)
+	}
+}
+
 func TestStatRecoversFromTLSHandshakeTimeout(t *testing.T) {
 	var handshakes atomic.Int32
 	releaseFirstHandshake := make(chan struct{})

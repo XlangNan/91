@@ -250,6 +250,8 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 	r.Get("/api/share/{shareID}/playback", s.handleSharedVideoPlayback)
 	r.Post("/api/share/{shareID}/view", s.handleSharedVideoView)
 	r.Get("/p/share/{shareID}/stream", s.handleSharedVideoStream)
+	r.Get("/p/share/{shareID}/hls/{sessionID}/{resource}", s.handleSharedVideoHLS)
+	r.Head("/p/share/{shareID}/hls/{sessionID}/{resource}", s.handleSharedVideoHLS)
 	r.Get("/p/share/{shareID}/preview", s.handleSharedVideoPreview)
 	r.Get("/p/share/{shareID}/thumb", s.handleSharedVideoThumb)
 	r.Get("/p/share/{shareID}/subtitle/{index}", s.handleSharedSubtitleFile)
@@ -276,6 +278,8 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 
 		// 代理路由同样需要鉴权，防止绕过
 		r.Get("/p/stream/{driveID}/*", s.handleStream)
+		r.Get("/p/hls/{id}/{sessionID}/{resource}", s.handleVideoHLS)
+		r.Head("/p/hls/{id}/{sessionID}/{resource}", s.handleVideoHLS)
 		r.Get("/p/subtitle/{id}/{index}", s.handleSubtitleFile)
 		r.Get("/p/upload/{videoID}", s.handleUploadedVideo)
 		r.Get("/p/preview/{videoID}", s.handlePreview)

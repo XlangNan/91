@@ -87,7 +87,19 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 		}
 		dto := PlaybackSourceDTO{ID: source.ID, Label: source.Label, Kind: source.Kind, Protocol: source.Protocol, Status: source.Status, MediaType: source.MediaType, Message: source.Message, ResolveURL: cloud.ResolveURL}
 		if source.Status == "ready" {
-			if safePlaybackLink(source.Link) {
+			if source.Relay != nil {
+				sessionID, expires, err := s.Proxy.StartHLSPlayback(v.DriveID, v.FileID, source)
+				if err == nil {
+					prefix := "/p/hls/" + pathSegment(v.ID)
+					if shareID := routeParam(r, "shareID"); shareID != "" {
+						prefix = "/p/share/" + pathSegment(shareID) + "/hls"
+					}
+					dto.URL = prefix + "/" + sessionID + "/index.m3u8"
+					dto.ExpiresAt = &expires
+				} else {
+					dto.Status, dto.Message = "unavailable", "网盘暂未提供可用的兼容播放源"
+				}
+			} else if safePlaybackLink(source.Link) {
 				dto.URL = source.Link.URL
 				if !source.Link.Expires.IsZero() {
 					expires := source.Link.Expires
@@ -104,6 +116,31 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 		manifest.Sources = append(manifest.Sources, cloud)
 	}
 	writeJSON(w, http.StatusOK, manifest)
+}
+
+func (s *Server) handleVideoHLS(w http.ResponseWriter, r *http.Request) {
+	v, err := s.availableVideo(r.Context(), routeParam(r, "id"))
+	if err != nil {
+		writeCatalogLookupError(w, r, err)
+		return
+	}
+	s.serveVideoHLS(w, r, v)
+}
+
+func (s *Server) handleSharedVideoHLS(w http.ResponseWriter, r *http.Request) {
+	v, ok := s.activeSharedVideo(w, r)
+	if !ok {
+		return
+	}
+	s.serveVideoHLS(w, r, v)
+}
+
+func (s *Server) serveVideoHLS(w http.ResponseWriter, r *http.Request, v *catalog.Video) {
+	if s.Proxy == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.Proxy.ServeHLS(w, r, v.DriveID, v.FileID, routeParam(r, "sessionID"), routeParam(r, "resource"))
 }
 
 func safePlaybackLink(link *drives.StreamLink) bool {

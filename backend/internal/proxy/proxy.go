@@ -85,6 +85,9 @@ type Proxy struct {
 	resolveTimeout time.Duration
 	http           *http.Client
 	relay          *http.Client
+	hlsMu          sync.Mutex
+	hlsSessions    map[string]*hlsSession
+	hlsResources   int
 
 	allowForcedRelay atomic.Bool
 
@@ -127,6 +130,7 @@ func New(r *Registry) *Proxy {
 		resolveTimeout:   linkResolveTimeout,
 		reportedStatus:   make(map[string]string),
 		initErrors:       make(map[string]driveInitError),
+		hlsSessions:      make(map[string]*hlsSession),
 		http:             streamhttp.NewClient(0), // 流式不设超时
 		relay:            streamhttp.NewNoRedirectClient(0),
 	}
@@ -166,6 +170,13 @@ func (p *Proxy) SetStreamStatusReporter(reporter StreamStatusReporter) {
 // instance. It is called whenever credentials are saved/re-mounted so the next
 // playback cannot reuse a stale URL or suppress a repeated authentication error.
 func (p *Proxy) InvalidateDrive(driveID string) {
+	p.hlsMu.Lock()
+	for id, session := range p.hlsSessions {
+		if session.driveID == driveID {
+			p.removeHLSSessionLocked(id)
+		}
+	}
+	p.hlsMu.Unlock()
 	prefix := driveID + "/"
 	p.cacheMu.Lock()
 	for key := range p.playbackCache {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  diagnosePlaybackFailure,
   diagnosePlaybackSource,
   isSameOriginPlaybackURL,
 } from "../src/lib/playbackError.ts";
@@ -44,6 +45,25 @@ test("playback diagnostics identify an expired share session", async () => {
     message,
     "分享播放凭证已失效，请重新打开有效的一次性分享链接"
   );
+});
+
+test("HLS relay diagnostics detect an expired login", async () => {
+  const src = "/p/hls/video/session/index.m3u8";
+  const login = await diagnosePlaybackSource(src, {
+    baseHref: "https://video.example/videos/1",
+    fetch: async () => new Response("unauthorized", { status: 401 }),
+  });
+  assert.equal(login, "当前登录状态已失效，请重新登录后播放");
+});
+
+test("expired HLS relay sources permit refresh instead of becoming access failures", async () => {
+  const failure = await diagnosePlaybackFailure("/p/hls/video/session/index.m3u8", {
+    baseHref: "https://video.example/videos/1",
+    fetch: async () => new Response(JSON.stringify({
+      code: "playback_source_expired", message: "兼容播放地址已过期，请重新获取",
+    }), { status: 410, headers: { "Content-Type": "application/json" } }),
+  });
+  assert.equal(failure?.kind, "network");
 });
 
 test("playback diagnostics surface the backend drive error message", async () => {

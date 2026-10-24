@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -146,3 +149,148 @@ func TestPlaybackManifestAndLazyCloudResolution(t *testing.T) {
 type apiOriginalOnlyDrive struct{ drives.Drive }
 
 func (*apiOriginalOnlyDrive) Kind() string { return "webdav" }
+
+func TestHLSPlaybackAuthenticatesEveryResourceAndShare(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	now := time.Now()
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{ID: "115", Kind: "p115", Name: "115", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"video", "other"} {
+		if err := cat.UpsertVideo(ctx, &catalog.Video{ID: id, DriveID: "115", FileID: id, Ext: "mp4", CreatedAt: now, UpdatedAt: now, PublishedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cat.CreateSession(ctx, "login", time.Hour, createSessionUser(t, cat)); err != nil {
+		t.Fatal(err)
+	}
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		if r.URL.Path != "/segment" || r.Header.Get("Cookie") != "" || r.UserAgent() != "fixed-ua" {
+			t.Errorf("invalid media request: %s %v", r.URL, r.Header)
+		}
+		io.WriteString(w, "video-bytes")
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	d := &apiPlaybackDrive{sources: []drives.PlaybackSource{{ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: "ready",
+		Link:  &drives.StreamLink{URL: upstream.URL + "/master", Headers: http.Header{"User-Agent": {"fixed-ua"}}, Expires: now.Add(time.Minute)},
+		Relay: &drives.HLSRelay{Playlist: "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nsegment?signature=private\n#EXT-X-ENDLIST\n", AllowedHosts: []string{u.Host}},
+	}}}
+	registry := proxy.NewRegistry()
+	registry.Set("115", d)
+	s := &Server{Catalog: cat, Proxy: proxy.New(registry), shareNow: func() time.Time { return now }}
+	router := chi.NewRouter()
+	s.RegisterRoutes(router, &auth.Authenticator{Catalog: cat})
+	login := &http.Cookie{Name: "vs_admin", Value: "login"}
+	request := func(path string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", path, nil)
+		if cookie != nil {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w
+	}
+	decode := func(w *httptest.ResponseRecorder) PlaybackManifestDTO {
+		t.Helper()
+		var manifest PlaybackManifestDTO
+		if w.Code != 200 {
+			t.Fatalf("metadata=%d %s", w.Code, w.Body.String())
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &manifest); err != nil {
+			t.Fatal(err)
+		}
+		return manifest
+	}
+	manifest := decode(request("/api/video/video/playback", login))
+	if d.calls != 0 || manifest.Sources[1].Status != "unknown" {
+		t.Fatal("HLS was resolved before selection")
+	}
+	manifest = decode(request("/api/video/video/playback?source=cloud", login))
+	if len(manifest.Sources) != 2 || manifest.Sources[0].URL != "/p/stream/115/video" || manifest.Sources[1].Status != "ready" {
+		t.Fatalf("manifest=%+v", manifest)
+	}
+	root := manifest.Sources[1].URL
+	if !strings.HasPrefix(root, "/p/hls/video/") || strings.Contains(root, upstream.URL) {
+		t.Fatalf("invalid relay URL %s", root)
+	}
+	if w := request(root, nil); w.Code != 401 {
+		t.Fatalf("unauthenticated master=%d", w.Code)
+	}
+	w := request(root, login)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "signature=private") || upstreamCalls.Load() != 0 {
+		t.Fatalf("master=%d %s", w.Code, w.Body.String())
+	}
+	var segment string
+	for _, line := range strings.Split(w.Body.String(), "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			segment = line
+		}
+	}
+	if w := request(segment, nil); w.Code != 401 {
+		t.Fatalf("unauthenticated segment=%d", w.Code)
+	}
+	if w := request(strings.Replace(segment, "/p/hls/video/", "/p/hls/other/", 1), login); w.Code != 404 {
+		t.Fatalf("cross-video request=%d", w.Code)
+	}
+	if w := request(segment+"?signature=attacker", login); w.Code != 200 || w.Body.String() != "video-bytes" {
+		t.Fatalf("media=%d %s", w.Code, w.Body.String())
+	}
+
+	// A claimed share can resolve and fetch the same source with only its
+	// share cookie; none of its rewritten links escape into login-only routes.
+	create := httptest.NewRequest("POST", "/api/video/video/share", nil)
+	create.AddCookie(login)
+	createdRR := httptest.NewRecorder()
+	router.ServeHTTP(createdRR, create)
+	if createdRR.Code != 201 {
+		t.Fatalf("share creation=%d %s", createdRR.Code, createdRR.Body.String())
+	}
+	var created createVideoShareResponse
+	json.Unmarshal(createdRR.Body.Bytes(), &created)
+	consumeRR := httptest.NewRecorder()
+	router.ServeHTTP(consumeRR, newConsumeShareRequest(strings.TrimPrefix(created.URL, "/share#")))
+	if consumeRR.Code != 200 {
+		t.Fatalf("share claim=%d %s", consumeRR.Code, consumeRR.Body.String())
+	}
+	var consumed consumeVideoShareResponse
+	json.Unmarshal(consumeRR.Body.Bytes(), &consumed)
+	shareCookie := responseCookieByName(t, consumeRR, videoShareCookieName)
+	shared := decode(request(consumed.Video.PlaybackURL+"?source=cloud", shareCookie))
+	sharedRoot := shared.Sources[1].URL
+	if !strings.HasPrefix(sharedRoot, "/p/share/"+consumed.ShareID+"/hls/") {
+		t.Fatalf("share escaped its route: %s", sharedRoot)
+	}
+	if w := request(sharedRoot, nil); w.Code != 404 {
+		t.Fatalf("unclaimed HLS=%d", w.Code)
+	}
+	w = request(sharedRoot, shareCookie)
+	for _, line := range strings.Split(w.Body.String(), "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			segment = line
+		}
+	}
+	if w.Code != 200 || !strings.HasPrefix(segment, "/p/share/"+consumed.ShareID+"/hls/") {
+		t.Fatalf("invalid shared playlist: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(segment, shareCookie); w.Code != 200 {
+		t.Fatalf("shared media=%d", w.Code)
+	}
+	now = now.Add(videoShareSessionTTL)
+	if w := request(segment, shareCookie); w.Code != 404 {
+		t.Fatalf("expired share media=%d", w.Code)
+	}
+	if err := cat.HideVideo(ctx, "video"); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(root, login); w.Code != 404 {
+		t.Fatalf("hidden video master=%d", w.Code)
+	}
+}

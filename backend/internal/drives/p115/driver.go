@@ -599,14 +599,28 @@ func (d *Driver) GenerationStreamURL(ctx context.Context, fileID string, forceRe
 }
 
 func (d *Driver) resolveGenerationStream(ctx context.Context, fileID string) (*drives.StreamLink, error) {
+	masterURL, body, err := d.fetchHLSMaster(ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+	variantURL, err := selectHLSVariant(masterURL, string(body))
+	if err != nil {
+		return nil, fmt.Errorf("115 hls: %w: %v", drives.ErrGenerationStreamUnavailable, err)
+	}
+	return p115HLSLink(variantURL), nil
+}
+
+// fetchHLSMaster is shared by generation and online playback. Only the caller
+// owns caching and availability, so a scan's rejection cannot disable playback.
+func (d *Driver) fetchHLSMaster(ctx context.Context, fileID string) (string, []byte, error) {
 	pickCode := d.rememberedPickCode(fileID)
 	if pickCode == "" {
 		if d.client == nil {
-			return nil, fmt.Errorf("115 hls get file: %w", drives.ErrGenerationStreamUnavailable)
+			return "", nil, fmt.Errorf("115 hls get file: %w", drives.ErrGenerationStreamUnavailable)
 		}
 		f, err := d.getFile(ctx, fileID)
 		if err != nil {
-			return nil, wrap115StreamTransientError("115 hls get file", err)
+			return "", nil, wrap115StreamTransientError("115 hls get file", err)
 		}
 		if f != nil {
 			pickCode = strings.TrimSpace(f.PickCode)
@@ -614,7 +628,7 @@ func (d *Driver) resolveGenerationStream(ctx context.Context, fileID string) (*d
 		}
 	}
 	if pickCode == "" {
-		return nil, fmt.Errorf("115 hls: %w: missing pick code", drives.ErrGenerationStreamUnavailable)
+		return "", nil, fmt.Errorf("115 hls: %w: missing pick code", drives.ErrGenerationStreamUnavailable)
 	}
 
 	base := strings.TrimSpace(d.hlsMasterBaseURL)
@@ -624,7 +638,7 @@ func (d *Driver) resolveGenerationStream(ctx context.Context, fileID string) (*d
 	masterURL := strings.TrimRight(base, "/") + "/" + url.PathEscape(pickCode) + ".m3u8"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, masterURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("115 hls request: %w", err)
+		return "", nil, fmt.Errorf("115 hls request: %w", err)
 	}
 	req.Header.Set("User-Agent", p115HLSUserAgent)
 	req.Header.Set("Referer", p115HLSReferer)
@@ -635,30 +649,30 @@ func (d *Driver) resolveGenerationStream(ctx context.Context, fileID string) (*d
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, optionalHLSFailure("115 hls master", err)
+		return "", nil, optionalHLSFailure("115 hls master", err)
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, p115HLSMaxPlaylist+1))
 	if readErr != nil {
-		return nil, optionalHLSFailure("115 hls master read", readErr)
+		return "", nil, optionalHLSFailure("115 hls master read", readErr)
 	}
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("115 hls master status=%d", resp.StatusCode)
 		if resp.StatusCode == http.StatusMethodNotAllowed ||
 			resp.StatusCode == http.StatusTooManyRequests {
-			return nil, wrap115StreamTransientError("115 hls master", err)
+			return "", nil, wrap115StreamTransientError("115 hls master", err)
 		}
 		// The generation stream is an optional optimization, so a rejection
 		// here must not cool down the whole drive. Falling back to the ordinary
 		// download URL keeps media generation working when only online playback
 		// is refused, and lets a genuinely invalid cookie surface as the
 		// permanent authentication failure it is.
-		log.Printf("[p115] hls generation unavailable drive=%s file=%s status=%d; falling back to the download url",
+		log.Printf("[p115] hls unavailable drive=%s file=%s status=%d",
 			d.id, fileID, resp.StatusCode)
-		return nil, fmt.Errorf("115 hls: %w: status=%d", drives.ErrGenerationStreamUnavailable, resp.StatusCode)
+		return "", nil, fmt.Errorf("115 hls: %w: status=%d", drives.ErrGenerationStreamUnavailable, resp.StatusCode)
 	}
 	if len(body) > p115HLSMaxPlaylist {
-		return nil, fmt.Errorf("115 hls: %w: playlist too large", drives.ErrGenerationStreamUnavailable)
+		return "", nil, fmt.Errorf("115 hls: %w: playlist too large", drives.ErrGenerationStreamUnavailable)
 	}
 	// This endpoint can return HTTP 200 with a JSON business error instead
 	// of a playlist. Keep that reason while allowing the original source.
@@ -683,16 +697,14 @@ func (d *Driver) resolveGenerationStream(ctx context.Context, fileID string) (*d
 		if len(reason) > 256 {
 			reason = reason[:256]
 		}
-		return nil, &hlsBusinessError{reason: reason}
+		return "", nil, &hlsBusinessError{reason: reason}
 	}
-	variantURL, err := selectHLSVariant(masterURL, string(body))
-	if err != nil {
-		log.Printf("[p115] hls generation unavailable drive=%s file=%s master_host=%s: %v",
-			d.id, fileID, req.URL.Hostname(), err)
-		return nil, fmt.Errorf("115 hls: %w: %v", drives.ErrGenerationStreamUnavailable, err)
-	}
+	return masterURL, body, nil
+}
+
+func p115HLSLink(sourceURL string) *drives.StreamLink {
 	return &drives.StreamLink{
-		URL: variantURL,
+		URL: sourceURL,
 		Headers: http.Header{
 			"User-Agent": {p115HLSUserAgent},
 			"Referer":    {p115HLSReferer},
@@ -701,7 +713,7 @@ func (d *Driver) resolveGenerationStream(ctx context.Context, fileID string) (*d
 		// the provider signature's exact expiry. A 403 still triggers the
 		// caller's force-refresh path before this deadline.
 		Expires: time.Now().Add(p115HLSCacheTTL),
-	}, nil
+	}
 }
 
 func selectHLSVariant(masterURL, playlist string) (string, error) {
