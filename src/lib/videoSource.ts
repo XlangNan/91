@@ -354,9 +354,7 @@ export function attachVideoSource(
     if (controller.state.mode === "auto") {
       const next = candidate();
       if (next) {
-        const notice = source.kind === "original"
-          ? "原画暂时无法播放，已切换兼容播放" : "兼容播放暂时不可用，已切换其他播放源";
-        await start(next, false, notice);
+        await start(next, false);
         return;
       }
     }
@@ -482,7 +480,7 @@ export function attachVideoSource(
       if (!disposed && epoch === generation) fail(errorMessage(error), null, failureReason(error));
     }
   }
-  async function start(selected: PlaybackSource, refresh: boolean, notice: string | null = null) {
+  async function start(selected: PlaybackSource, refresh: boolean) {
     const epoch = begin();
     const previous = controller.state.activeSource;
     try {
@@ -505,8 +503,6 @@ export function attachVideoSource(
       }
       controller.state.activeSource = selected;
       controller.url = selected.url;
-      if (controller.state.mode === "auto" && selected.kind === "transcoded" && !previous)
-        notice = "兼容播放";
       if (selected.protocol === "file") {
         if (options.loadNative) options.loadNative(selected.url);
         else { video.src = selected.url; video.load(); }
@@ -534,7 +530,13 @@ export function attachVideoSource(
       }
       if (disposed || epoch !== generation) return;
       controller.state.loading = false;
-      controller.state.notice = notice;
+      controller.state.notice = null;
+      if (controller.state.mode === "auto") {
+        if (selected.kind === "transcoded" && previous?.kind !== "transcoded")
+          controller.state.notice = "兼容播放";
+        else if (selected.kind === "original" && previous?.kind === "transcoded")
+          controller.state.notice = "兼容播放暂时不可用，已切换其他播放源";
+      }
       changed();
       video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_READY));
     } catch (error) {

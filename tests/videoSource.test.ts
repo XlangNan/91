@@ -303,7 +303,7 @@ test("audio-only decode failures switch to HLS without refreshing an incompatibl
   assert.equal(urls.length, 2);
   assert.equal(urls[1].searchParams.get("refresh"), null);
   assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud");
-  assert.match(playbackSourceState(video)?.notice ?? "", /已切换兼容播放/);
+  assert.equal(playbackSourceState(video)?.notice, "兼容播放");
 });
 
 test("manual original playback fails visibly without changing quality", async () => {
