@@ -33,6 +33,16 @@ func (d *apiPlaybackDrive) PlaybackSources(context.Context, string) ([]drives.Pl
 	return d.sources, d.err
 }
 
+type apiPreparingPlaybackDrive struct {
+	apiPlaybackDrive
+	prepares atomic.Int32
+}
+
+func (d *apiPreparingPlaybackDrive) PreparePlayback(context.Context, string) ([]drives.PlaybackSource, error) {
+	d.prepares.Add(1)
+	return d.sources, d.err
+}
+
 func TestPlaybackManifestAndLazyCloudResolution(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
@@ -143,6 +153,33 @@ func TestPlaybackManifestAndLazyCloudResolution(t *testing.T) {
 	manifest := decode(request("/api/video/mp4/playback", true))
 	if len(manifest.Sources) != 1 || manifest.Sources[0].ID != "original" {
 		t.Fatalf("original-only drive=%+v", manifest)
+	}
+	preparing := &apiPreparingPlaybackDrive{apiPlaybackDrive: apiPlaybackDrive{sources: []drives.PlaybackSource{{
+		ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: "processing", Message: "正在转码",
+	}}}}
+	registry.Set("wo", preparing)
+	s.Proxy.InvalidateDrive("wo")
+	manifest = decode(request("/api/video/ts/playback?source=cloud", true))
+	if manifest.Sources[1].PrepareURL != "/api/video/ts/playback/prepare" || preparing.prepares.Load() != 0 {
+		t.Fatalf("query prepared media or lost preparation URL: %+v", manifest)
+	}
+	for _, authorized := range []bool{false, true} {
+		req := httptest.NewRequest("POST", "/api/video/ts/playback/prepare", nil)
+		if authorized {
+			req.AddCookie(&http.Cookie{Name: "vs_admin", Value: "login"})
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if !authorized {
+			if w.Code != 401 || preparing.prepares.Load() != 0 {
+				t.Fatalf("unauthorized preparation: status=%d calls=%d", w.Code, preparing.prepares.Load())
+			}
+			continue
+		}
+		manifest = decode(w)
+		if manifest.Sources[1].ResolveURL != "/api/video/ts/playback?source=cloud" || preparing.prepares.Load() != 1 {
+			t.Fatalf("POST did not prepare or returned a POST-only polling URL: %+v", manifest)
+		}
 	}
 }
 
@@ -283,7 +320,36 @@ func TestHLSPlaybackAuthenticatesEveryResourceAndShare(t *testing.T) {
 	if w := request(segment, shareCookie); w.Code != 200 {
 		t.Fatalf("shared media=%d", w.Code)
 	}
+	preparing := &apiPreparingPlaybackDrive{apiPlaybackDrive: apiPlaybackDrive{sources: []drives.PlaybackSource{{
+		ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: "processing",
+	}}}}
+	registry.Set("115", preparing)
+	s.Proxy.InvalidateDrive("115")
+	shared = decode(request(consumed.Video.PlaybackURL+"?source=cloud", shareCookie))
+	preparePath := shared.Sources[1].PrepareURL
+	if preparePath != consumed.Video.PlaybackURL+"/prepare" {
+		t.Fatalf("shared preparation escaped its route: %q", preparePath)
+	}
+	prepareShared := func(cookie *http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", preparePath, nil)
+		if cookie != nil {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w
+	}
+	if w := prepareShared(nil); w.Code != 404 || preparing.prepares.Load() != 0 {
+		t.Fatal("unclaimed share prepared media")
+	}
+	shared = decode(prepareShared(shareCookie))
+	if preparing.prepares.Load() != 1 || shared.Sources[1].ResolveURL != consumed.Video.PlaybackURL+"?source=cloud" {
+		t.Fatalf("shared preparation: %+v", shared)
+	}
 	now = now.Add(videoShareSessionTTL)
+	if w := prepareShared(shareCookie); w.Code != 404 || preparing.prepares.Load() != 1 {
+		t.Fatal("expired share prepared media")
+	}
 	if w := request(segment, shareCookie); w.Code != 404 {
 		t.Fatalf("expired share media=%d", w.Code)
 	}

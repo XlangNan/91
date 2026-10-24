@@ -517,6 +517,23 @@
   font-weight: var(--weight-bold);
 }
 
+.video-player__processing {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(360px, calc(100% - 40px));
+  padding: 18px;
+  border-radius: var(--radius-md);
+  background: rgba(8, 9, 13, 0.86);
+  color: #fff;
+  font-size: var(--font-md);
+  line-height: 1.6;
+  text-align: center;
+  pointer-events: none;
+  z-index: 8;
+}
+
 .video-player__error-message {
   color: rgba(255, 255, 255, 0.76);
   font-size: var(--font-md);

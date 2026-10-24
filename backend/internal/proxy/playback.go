@@ -26,6 +26,16 @@ type playbackCall struct {
 // existing original-file playback route. Refresh bypasses cache, not inflight
 // work, so simultaneous user retries still share one provider request.
 func (p *Proxy) PlaybackSources(ctx context.Context, driveID, fileID string, refresh bool) ([]drives.PlaybackSource, error) {
+	return p.resolvePlayback(ctx, driveID, fileID, refresh, false)
+}
+
+// PreparePlaybackSources coalesces explicit preparation separately from read-only
+// lookups. Refreshing the metadata cache never resets provider submission guards.
+func (p *Proxy) PreparePlaybackSources(ctx context.Context, driveID, fileID string) ([]drives.PlaybackSource, error) {
+	return p.resolvePlayback(ctx, driveID, fileID, true, true)
+}
+
+func (p *Proxy) resolvePlayback(ctx context.Context, driveID, fileID string, refresh, prepare bool) ([]drives.PlaybackSource, error) {
 	d, ok := p.Registry.Get(driveID)
 	if !ok {
 		if failure, found := p.driveInitError(driveID); found {
@@ -37,8 +47,23 @@ func (p *Proxy) PlaybackSources(ctx context.Context, driveID, fileID string, ref
 	if !ok {
 		return nil, nil
 	}
+	resolve := provider.PlaybackSources
+	if prepare {
+		preparer, ok := d.(drives.PlaybackSourcePreparer)
+		if !ok {
+			return nil, fmt.Errorf("drive does not support playback preparation")
+		}
+		resolve = preparer.PreparePlayback
+	}
 	key := driveID + "/" + fileID
 	p.cacheMu.Lock()
+	calls := p.playbackInflight
+	if prepare {
+		calls = p.playbackPreparing
+		// Older read-only lookups may finish after submission. Their results
+		// must not replace the post-submission state in the shared query cache.
+		delete(p.playbackInflight, key)
+	}
 	if c, found := p.playbackCache[key]; found {
 		if !refresh && time.Now().Before(c.until) {
 			p.cacheMu.Unlock()
@@ -46,10 +71,10 @@ func (p *Proxy) PlaybackSources(ctx context.Context, driveID, fileID string, ref
 		}
 		delete(p.playbackCache, key)
 	}
-	call := p.playbackInflight[key]
+	call := calls[key]
 	if call == nil {
 		call = &playbackCall{done: make(chan struct{})}
-		p.playbackInflight[key] = call
+		calls[key] = call
 		deadline := p.resolveTimeout
 		if deadline <= 0 {
 			deadline = linkResolveTimeout
@@ -60,8 +85,11 @@ func (p *Proxy) PlaybackSources(ctx context.Context, driveID, fileID string, ref
 				p.cacheMu.Lock()
 				defer p.cacheMu.Unlock()
 				call.sources, call.err = sources, err
-				if p.playbackInflight[key] == call {
-					delete(p.playbackInflight, key)
+				if calls[key] == call {
+					delete(calls, key)
+					if prepare {
+						delete(p.playbackInflight, key)
+					}
 					if err == nil && sources != nil {
 						now := time.Now()
 						ttl := 2 * time.Minute
@@ -94,7 +122,7 @@ func (p *Proxy) PlaybackSources(ctx context.Context, driveID, fileID string, ref
 		}
 		go func() {
 			defer cancel()
-			sources, err := provider.PlaybackSources(resolveCtx, fileID)
+			sources, err := resolve(resolveCtx, fileID)
 			if err == nil && sources == nil {
 				err = fmt.Errorf("provider returned nil playback sources")
 			}
@@ -154,5 +182,14 @@ func (p *Proxy) HasPlaybackProvider(driveID string) bool {
 		return false
 	}
 	_, ok = d.(drives.PlaybackSourceProvider)
+	return ok
+}
+
+func (p *Proxy) HasPlaybackPreparer(driveID string) bool {
+	d, ok := p.Registry.Get(driveID)
+	if !ok {
+		return false
+	}
+	_, ok = d.(drives.PlaybackSourcePreparer)
 	return ok
 }

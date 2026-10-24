@@ -1,6 +1,6 @@
 import "./helpers/dom-environment.ts";
 import assert from "node:assert/strict";
-import test, { afterEach } from "node:test";
+import test, { afterEach, type TestContext } from "node:test";
 import {
   attachVideoSource,
   disposeVideoSource,
@@ -10,6 +10,7 @@ import {
   retryVideoSource,
   selectPlaybackMode,
   useOriginalVideoSource,
+  setVideoSourceActive,
   type PlaybackSource,
 } from "../src/lib/videoSource.ts";
 
@@ -75,6 +76,164 @@ class FakeHls {
   fail(type = "networkError", code?: number) { this.handler("error", { fatal: true, type, response: code ? { code } : undefined }); }
 }
 const loadHls = async () => FakeHls as never;
+
+function processingPlayback(t: TestContext, active = true) {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const video = media();
+  const calls: { url: URL; method: string; signal?: AbortSignal | null }[] = [];
+  const pending: PlaybackSource = {
+    ...cloud, status: "processing", prepareUrl: "/api/video/one/playback/prepare", message: "视频正在转码",
+  };
+  let ready = false;
+  let preparationStatus = 200;
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    active, mode: "compatible", loadHls,
+    fetch: (async (path, init) => {
+      const url = new URL(String(path));
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, signal: init?.signal });
+      if (method === "POST" && preparationStatus !== 200) return json({}, preparationStatus);
+      return manifest(original, method === "POST" || url.searchParams.get("source") === "cloud"
+        ? ready ? readyCloud : pending : cloud);
+    }) as typeof fetch,
+  });
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  return {
+    video, calls, flush,
+    ready() { ready = true; },
+    rejectPreparation(status: number) { preparationStatus = status; },
+    async advance(ms: number) { t.mock.timers.tick(ms); await flush(); },
+    submissions() { return calls.filter((call) => call.method === "POST"); },
+  };
+}
+
+test("pending compatibility submits once and automatically plays after a read-only poll", async (t) => {
+  const env = processingPlayback(t);
+  await env.flush();
+  assert.equal(env.submissions().length, 1);
+  assert.equal(env.submissions()[0].url.pathname, "/api/video/one/playback/prepare");
+  assert.equal(playbackSourceError(env.video), null);
+  assert.equal(playbackSourceState(env.video)?.processing, true);
+  await env.advance(15_000);
+  assert.equal(env.submissions().length, 1);
+  assert.equal(env.calls.at(-1)?.method, "GET");
+  assert.equal(env.calls.at(-1)?.url.searchParams.has("refresh"), false);
+  env.ready();
+  await env.advance(15_000);
+  assert.equal(playbackSourceState(env.video)?.processing, false);
+  assert.equal(playbackSourceState(env.video)?.activeSource?.status, "ready");
+  assert.equal(FakeHls.instances.length, 1);
+});
+
+test("preloaded pending videos neither submit nor poll until promoted to the active video", async (t) => {
+  const env = processingPlayback(t, false);
+  await env.flush();
+  const preloadedCalls = env.calls.length;
+  await env.advance(60_000);
+  assert.equal(env.calls.length, preloadedCalls);
+  assert.equal(env.submissions().length, 0);
+  setVideoSourceActive(env.video, true);
+  await env.flush();
+  assert.equal(env.submissions().length, 1);
+  env.ready();
+  await env.advance(15_000);
+  assert.equal(FakeHls.instances.length, 1);
+});
+
+test("leaving a processing video stops polling and returning does not resubmit", async (t) => {
+  const env = processingPlayback(t);
+  await env.flush();
+  const before = env.calls.length;
+  setVideoSourceActive(env.video, false);
+  await env.advance(60_000);
+  assert.equal(env.calls.length, before);
+  assert.equal(playbackSourceError(env.video), null);
+  setVideoSourceActive(env.video, true);
+  await env.flush();
+  assert.equal(env.submissions().length, 1);
+  env.ready();
+  await env.advance(15_000);
+  assert.equal(FakeHls.instances.length, 1);
+});
+
+test("switching to original playback cancels conversion polling", async (t) => {
+  const env = processingPlayback(t);
+  await env.flush();
+  selectPlaybackMode(env.video, "original");
+  await env.flush();
+  const before = env.calls.length;
+  await env.advance(60_000);
+  assert.equal(env.calls.length, before);
+  assert.equal(playbackSourceState(env.video)?.activeSource?.kind, "original");
+  assert.equal(playbackSourceState(env.video)?.processing, false);
+});
+
+test("a failed original can still offer a compatible source that is processing", async (t) => {
+  const env = processingPlayback(t);
+  await env.flush();
+  selectPlaybackMode(env.video, "original");
+  await env.flush();
+  mediaError(env.video);
+  await env.flush();
+  assert.deepEqual(playbackSourceState(env.video)?.error?.recoveryModes, ["compatible"]);
+});
+
+test("processing wait is bounded and reacquisition rechecks without another submission", async (t) => {
+  const env = processingPlayback(t);
+  await env.flush();
+  await env.advance(5 * 60_000);
+  assert.equal(playbackSourceState(env.video)?.error?.reason, "processing");
+  assert.match(playbackSourceError(env.video) ?? "", /重新获取/);
+  assert.equal(env.submissions().length, 1);
+  env.ready();
+  retryVideoSource(env.video);
+  await env.flush();
+  assert.equal(playbackSourceError(env.video), null);
+  assert.equal(env.submissions().length, 1);
+  assert.equal(FakeHls.instances.length, 1);
+});
+
+test("disposing a processing video cancels every future status request", async (t) => {
+  const env = processingPlayback(t);
+  await env.flush();
+  disposeVideoSource(env.video);
+  const before = env.calls.length;
+  await env.advance(5 * 60_000);
+  assert.equal(env.calls.length, before);
+  assert.equal(FakeHls.instances.length, 0);
+});
+
+test("processing metadata cannot submit to a foreign preparation URL", async () => {
+  const video = media();
+  const methods: string[] = [];
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    mode: "compatible", loadHls,
+    fetch: (async (path, init) => {
+      methods.push(init?.method ?? "GET");
+      return manifest(original, String(path).includes("source=cloud")
+        ? { ...cloud, status: "processing", prepareUrl: "https://foreign.example/prepare" } : cloud);
+    }) as typeof fetch,
+  });
+  await settle();
+  assert.deepEqual(methods, ["GET", "GET"]);
+  assert.match(playbackSourceError(video) ?? "", /无效的播放源解析地址/);
+});
+
+for (const status of [401, 403, 429]) {
+  test(`preparation HTTP ${status} stops without polling or automatic retries`, async (t) => {
+    const env = processingPlayback(t, false);
+    await env.flush();
+    env.rejectPreparation(status);
+    setVideoSourceActive(env.video, true);
+    await env.flush();
+    assert.equal(playbackSourceState(env.video)?.error?.reason, status === 429 ? "throttled" : "access");
+    const before = env.calls.length;
+    await env.advance(60_000);
+    assert.equal(env.calls.length, before);
+    assert.equal(env.submissions().length, 1);
+  });
+}
+
 function setup(options: { original?: PlaybackSource; cloud?: PlaybackSource; mode?: "auto" | "original" | "compatible" } = {}) {
   const video = media();
   const urls: URL[] = [];
@@ -224,7 +383,7 @@ test("HLS throttling stops without refresh or source rotation", async () => {
   assert.equal(urls.length, 2);
 });
 
-test("cloud processing stays separate from original availability and user retry resolves it again", async () => {
+test("cloud processing waits without failing and user retry resolves it again", async () => {
   const video = media();
   let ready = false;
   const urls: URL[] = [];
@@ -238,7 +397,9 @@ test("cloud processing stays separate from original availability and user retry 
     }) as typeof fetch,
   });
   await settle();
-  assert.match(playbackSourceError(video)!, /正在转码/);
+  assert.equal(playbackSourceError(video), null);
+  assert.equal(playbackSourceState(video)?.processing, true);
+  assert.match(playbackSourceState(video)?.notice ?? "", /正在转码/);
   assert.equal(video.getAttribute("src"), null);
   ready = true;
   retryVideoSource(video);
@@ -480,11 +641,11 @@ test("reacquiring a missing cloud source can succeed while preserving smart sele
 
 test("manual compatibility failure offers original only when it is still playable", async () => {
   const { video } = setup({
-    mode: "compatible", cloud: { ...cloud, status: "processing", message: "网盘正在转码" },
+    mode: "compatible", cloud: { ...cloud, status: "unavailable", message: "兼容播放源暂不可用" },
   });
   await settle();
   assert.equal(playbackSourceState(video)?.error?.sourceID, "cloud");
-  assert.equal(playbackSourceState(video)?.error?.reason, "processing");
+  assert.equal(playbackSourceState(video)?.error?.reason, "unavailable");
   assert.deepEqual(playbackSourceState(video)?.error?.recoveryModes, ["original"]);
   selectPlaybackMode(video, "original");
   await settle();
@@ -494,7 +655,7 @@ test("manual compatibility failure offers original only when it is still playabl
 test("manual compatibility failure does not offer an unsupported original", async () => {
   const { video } = setup({
     mode: "compatible", original: { ...original, mediaType: "video/mp2t" },
-    cloud: { ...cloud, status: "processing", message: "网盘正在转码" },
+    cloud: { ...cloud, status: "unavailable", message: "兼容播放源暂不可用" },
   });
   await settle();
   assert.deepEqual(playbackSourceState(video)?.error?.recoveryModes, []);

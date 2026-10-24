@@ -231,6 +231,7 @@ export function VideoPlayer({
   const playedRef = useRef(false);
   const [retryNonce, setRetryNonce] = useState(0);
   const [playerError, setPlayerError] = useState<PlayerError | null>(null);
+  const [sourceState, setSourceState] = useState<PlaybackState | null>(null);
   const [gestureHud, setGestureHud] = useState<GestureHud | null>(null);
   const [previewHover, setPreviewHover] = useState<PreviewHover | null>(null);
   const gestureHudTimerRef = useRef<number | null>(null);
@@ -249,6 +250,7 @@ export function VideoPlayer({
 
     playedRef.current = false;
     setPlayerError(null);
+    setSourceState(null);
     setPreviewHover(null);
 
     const cleanupPlayer = mountArtPlayer({
@@ -265,6 +267,7 @@ export function VideoPlayer({
       onFirstPlayRef,
       onFastChange: noop,
       onError: setPlayerError,
+      onSourceChange: setSourceState,
       onPreviewHover: setPreviewHover,
       onGestureHud: showGestureHud,
     });
@@ -317,12 +320,17 @@ export function VideoPlayer({
   const previewStyle = previewHover
     ? ({ left: `${previewHover.x}px` } as CSSProperties)
     : undefined;
-  const sourceState = artRef.current ? playbackSourceState(artRef.current.video) : null;
   const recoveryModes = sourceState?.error?.recoveryModes ?? [];
 
   return (
     <div className="video-player">
       <div ref={mountRef} className="video-player__mount" />
+
+      {sourceState?.processing && !playerError && (
+        <div className="video-player__processing" role="status" aria-live="polite">
+          {sourceState.notice || "视频正在转码，完成后将自动播放"}
+        </div>
+      )}
 
       {playerError && (
         <div className="video-player__error" role="alert">
@@ -402,6 +410,7 @@ function mountArtPlayer({
   onFirstPlayRef,
   onFastChange,
   onError,
+  onSourceChange,
   onPreviewHover,
   onGestureHud,
 }: {
@@ -418,6 +427,7 @@ function mountArtPlayer({
   onFirstPlayRef: MutableRefObject<Props["onFirstPlay"]>;
   onFastChange: (active: boolean) => void;
   onError: (error: PlayerError | null) => void;
+  onSourceChange: (state: PlaybackState) => void;
   onPreviewHover: (hover: PreviewHover | null) => void;
   onGestureHud: (label: string, duration?: number) => void;
 }) {
@@ -610,6 +620,7 @@ function mountArtPlayer({
   function handleSourceChange() {
     const state = playbackSourceState(video);
     if (!state) return;
+    onSourceChange(state);
     if (!state.error) onError(null);
     const hasCloudSource = state.sources.some((source) => source.kind === "transcoded");
     const settingKey = `${state.mode}:${hasCloudSource}`;
@@ -1126,6 +1137,7 @@ function createPlayerSettings(
 
 function playbackSourceStatus(state: PlaybackState) {
   if (state.error) return "播放源暂不可用";
+  if (state.processing) return "视频正在转码";
   if (state.loading) return "正在获取播放源";
   return state.activeSource ? `当前：${state.activeSource.label}` : "等待播放源";
 }

@@ -5,7 +5,7 @@ import { createElement } from "react";
 import { cleanup, render, act } from "@testing-library/react";
 import Artplayer from "artplayer";
 import { VideoPlayer } from "../src/components/VideoPlayer";
-import { playbackSourceState } from "../src/lib/videoSource";
+import { playbackSourceState, selectPlaybackMode } from "../src/lib/videoSource";
 
 for (const name of ["Element", "HTMLMediaElement", "HTMLCanvasElement", "Image"] as const) {
   Object.defineProperty(globalThis, name, { configurable: true, value: window[name] });
@@ -85,7 +85,7 @@ test("a failed compatibility selection exposes a working original switch in the 
   const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/drive/file", mediaType: "video/mp4" };
   const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
   window.fetch = (async (path) => new Response(JSON.stringify({
-    sources: [original, String(path).includes("source=cloud") ? { ...cloud, status: "processing", message: "网盘正在转码" } : cloud],
+    sources: [original, String(path).includes("source=cloud") ? { ...cloud, status: "unavailable", message: "兼容播放源暂不可用" } : cloud],
   }), { status: 200 })) as typeof fetch;
   const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
   await settle();
@@ -94,11 +94,36 @@ test("a failed compatibility selection exposes a working original switch in the 
   await act(async () => { art.setting.find("playback-mode")!.$item.click(); });
   await act(async () => { view.container.querySelector<HTMLElement>('[data-name="playback-mode-compatible"]')!.click(); });
   await settle();
-  assert.match(view.getByRole("alert").textContent ?? "", /正在转码/);
+  assert.match(view.getByRole("alert").textContent ?? "", /兼容播放源暂不可用/);
   await act(async () => { view.getByRole("button", { name: "尝试原画播放" }).click(); });
   await settle();
   assert.equal(view.queryByRole("alert"), null);
   assert.equal(playbackSourceState(video)?.mode, "original");
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "original");
+});
+
+test("conversion appears as a waiting status and can be canceled by selecting original", async () => {
+  const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/drive/file", mediaType: "video/mp4" };
+  const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
+  let submissions = 0;
+  window.fetch = (async (path, init) => {
+    if (init?.method === "POST") submissions++;
+    return new Response(JSON.stringify({ sources: [original,
+      String(path).includes("source=cloud") || init?.method === "POST"
+        ? { ...cloud, status: "processing", message: "视频正在转码，完成后将自动播放", prepareUrl: "/api/video/one/playback/prepare" } : cloud,
+    ] }), { status: 200 });
+  }) as typeof fetch;
+  const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
+  await settle();
+  const video = view.container.querySelector("video")!;
+  await act(async () => { selectPlaybackMode(video, "compatible"); });
+  await settle();
+  assert.equal(view.queryByRole("alert"), null);
+  assert.match(view.getByRole("status").textContent ?? "", /正在转码/);
+  assert.equal(submissions, 1);
+  await act(async () => { selectPlaybackMode(video, "original"); });
+  await settle();
+  assert.equal(view.queryByRole("status"), null);
   assert.equal(playbackSourceState(video)?.activeSource?.id, "original");
 });
 

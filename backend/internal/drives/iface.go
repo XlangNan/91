@@ -70,6 +70,12 @@ type PlaybackSourceProvider interface {
 	PlaybackSources(context.Context, string) ([]PlaybackSource, error)
 }
 
+// PlaybackSourcePreparer explicitly starts provider-side preparation after a
+// viewer requests playback. Listing or preloading sources must remain read-only.
+type PlaybackSourcePreparer interface {
+	PreparePlayback(context.Context, string) ([]PlaybackSource, error)
+}
+
 type PlaybackSource struct {
 	ID        string
 	Label     string

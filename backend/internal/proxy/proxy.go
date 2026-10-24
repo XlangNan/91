@@ -75,11 +75,12 @@ func (r *Registry) Remove(id string) {
 type Proxy struct {
 	Registry *Registry
 	// linkCache key: driveID + "/" + fileID (+ User-Agent for UA-bound links)
-	cacheMu          sync.Mutex
-	cache            map[string]cachedLink
-	inflight         map[string]*linkCall
-	playbackCache    map[string]cachedPlayback
-	playbackInflight map[string]*playbackCall
+	cacheMu           sync.Mutex
+	cache             map[string]cachedLink
+	inflight          map[string]*linkCall
+	playbackCache     map[string]cachedPlayback
+	playbackInflight  map[string]*playbackCall
+	playbackPreparing map[string]*playbackCall
 	// resolveTimeout is kept on the proxy so timeout behavior can be tested
 	// without making production tests wait for the full provider deadline.
 	resolveTimeout time.Duration
@@ -122,17 +123,18 @@ type driveInitError struct {
 
 func New(r *Registry) *Proxy {
 	p := &Proxy{
-		Registry:         r,
-		cache:            make(map[string]cachedLink),
-		inflight:         make(map[string]*linkCall),
-		playbackCache:    make(map[string]cachedPlayback),
-		playbackInflight: make(map[string]*playbackCall),
-		resolveTimeout:   linkResolveTimeout,
-		reportedStatus:   make(map[string]string),
-		initErrors:       make(map[string]driveInitError),
-		hlsSessions:      make(map[string]*hlsSession),
-		http:             streamhttp.NewClient(0), // 流式不设超时
-		relay:            streamhttp.NewNoRedirectClient(0),
+		Registry:          r,
+		cache:             make(map[string]cachedLink),
+		inflight:          make(map[string]*linkCall),
+		playbackCache:     make(map[string]cachedPlayback),
+		playbackInflight:  make(map[string]*playbackCall),
+		playbackPreparing: make(map[string]*playbackCall),
+		resolveTimeout:    linkResolveTimeout,
+		reportedStatus:    make(map[string]string),
+		initErrors:        make(map[string]driveInitError),
+		hlsSessions:       make(map[string]*hlsSession),
+		http:              streamhttp.NewClient(0), // 流式不设超时
+		relay:             streamhttp.NewNoRedirectClient(0),
 	}
 	p.allowForcedRelay.Store(true)
 	return p
@@ -187,6 +189,11 @@ func (p *Proxy) InvalidateDrive(driveID string) {
 	for key := range p.playbackInflight {
 		if strings.HasPrefix(key, prefix) {
 			delete(p.playbackInflight, key)
+		}
+	}
+	for key := range p.playbackPreparing {
+		if strings.HasPrefix(key, prefix) {
+			delete(p.playbackPreparing, key)
 		}
 	}
 	for key := range p.cache {

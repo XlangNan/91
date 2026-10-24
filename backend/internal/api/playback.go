@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/video-site/backend/internal/catalog"
@@ -17,6 +18,7 @@ type PlaybackSourceDTO struct {
 	Status     string     `json:"status"`
 	URL        string     `json:"url,omitempty"`
 	ResolveURL string     `json:"resolveUrl,omitempty"`
+	PrepareURL string     `json:"prepareUrl,omitempty"`
 	MediaType  string     `json:"mediaType,omitempty"`
 	Message    string     `json:"message,omitempty"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
@@ -49,6 +51,10 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	selected := r.URL.Query().Get("source")
+	prepare := r.Method == http.MethodPost
+	if prepare {
+		selected = "cloud"
+	}
 	if selected != "" && selected != "original" && selected != "cloud" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "未知的播放源"})
 		return
@@ -67,7 +73,8 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 		writeJSON(w, http.StatusOK, manifest)
 		return
 	}
-	resolveURL := &url.URL{Path: r.URL.Path, RawPath: r.URL.RawPath, RawQuery: "source=cloud"}
+	basePath, baseRawPath := strings.TrimSuffix(r.URL.Path, "/prepare"), strings.TrimSuffix(r.URL.RawPath, "/prepare")
+	resolveURL := &url.URL{Path: basePath, RawPath: baseRawPath, RawQuery: "source=cloud"}
 	cloud := PlaybackSourceDTO{ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: "unknown", ResolveURL: resolveURL.String()}
 	if selected != "cloud" {
 		// Listing candidates never calls a provider. Original playback can begin
@@ -76,7 +83,13 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 		writeJSON(w, http.StatusOK, manifest)
 		return
 	}
-	sources, err := s.Proxy.PlaybackSources(r.Context(), v.DriveID, v.FileID, refresh)
+	var sources []drives.PlaybackSource
+	var err error
+	if prepare {
+		sources, err = s.Proxy.PreparePlaybackSources(r.Context(), v.DriveID, v.FileID)
+	} else {
+		sources, err = s.Proxy.PlaybackSources(r.Context(), v.DriveID, v.FileID, refresh)
+	}
 	if err != nil {
 		s.Proxy.WritePlaybackError(w, v.DriveID, err)
 		return
@@ -86,6 +99,13 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 			continue
 		}
 		dto := PlaybackSourceDTO{ID: source.ID, Label: source.Label, Kind: source.Kind, Protocol: source.Protocol, Status: source.Status, MediaType: source.MediaType, Message: source.Message, ResolveURL: cloud.ResolveURL}
+		if source.Status == "processing" && s.Proxy.HasPlaybackPreparer(v.DriveID) {
+			prepareURL := &url.URL{Path: basePath + "/prepare"}
+			if baseRawPath != "" {
+				prepareURL.RawPath = baseRawPath + "/prepare"
+			}
+			dto.PrepareURL = prepareURL.String()
+		}
 		if source.Status == "ready" {
 			if source.Relay != nil {
 				sessionID, expires, err := s.Proxy.StartHLSPlayback(v.DriveID, v.FileID, source)

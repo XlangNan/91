@@ -23,6 +23,7 @@ import {
 import { hideVideo, setVideoLike, type ShortsItem } from "@/data/videos";
 import {
   attachVideoSource,
+  setVideoSourceActive,
   disposeVideoSource,
   playbackSourceError,
   PLAYBACK_SOURCE_ERROR,
@@ -1048,7 +1049,7 @@ function ShortsPlayback({
     }
     standby.dataset.shortsVideoId = nextItem.id;
     standby.poster = nextItem.poster;
-    attachVideoSource(standby, nextItem.videoSrc, nextItem.playbackUrl);
+    attachVideoSource(standby, nextItem.videoSrc, nextItem.playbackUrl, { active: false });
     // 光把字节拉下来还是一张静态图：video 在真正播放前一直画 poster。
     // 拿到元数据后 seek 一次逼它解码首帧，滑到位就直接有画面。
     warmStandbyFirstFrame(standby);
@@ -1946,10 +1947,15 @@ function ShortsSlideImpl({
   }, []);
 
   useEffect(() => {
-    if (usesSharedVideo || !shouldLoad || !shouldMount || !item.playbackUrl) return;
+    if (usesSharedVideo) return;
     const video = localRef.current;
-    if (video) attachVideoSource(video, item.videoSrc, item.playbackUrl);
-  }, [item.id, item.videoSrc, item.playbackUrl, shouldLoad, shouldMount, usesSharedVideo]);
+    if (!video) return;
+    if (shouldLoad && shouldMount && item.playbackUrl) {
+      attachVideoSource(video, item.videoSrc, item.playbackUrl, { active: isActive });
+    }
+    setVideoSourceActive(video, isActive && shouldLoad);
+    return () => setVideoSourceActive(video, false);
+  }, [item.id, item.videoSrc, item.playbackUrl, isActive, shouldLoad, shouldMount, usesSharedVideo]);
 
   useEffect(() => {
     if (!isActive || !shouldLoad) return;
@@ -3185,6 +3191,7 @@ function ShortsSlideImpl({
 
 
               {paused &&
+                !sourceState?.processing &&
                 !playbackFailure &&
                 isActive &&
                 !scrubbing &&
@@ -3204,12 +3211,20 @@ function ShortsSlideImpl({
 
               {/* 视频加载/缓冲旋转器 */}
               {isBuffering &&
+                !sourceState?.processing &&
                 !playbackFailure &&
                 isActive &&
                 shouldLoad &&
                 !isMarkedHidden && (
                 <div className="shorts-slide__buffering" aria-hidden="true">
                   <ShortsLoadingSpinner size={30} />
+                </div>
+              )}
+
+              {sourceState?.processing && isActive && shouldLoad && !isMarkedHidden && (
+                <div className="shorts-slide__processing" role="status" aria-live="polite">
+                  <ShortsLoadingSpinner size={30} />
+                  <span>{sourceState.notice || "视频正在转码，完成后将自动播放"}</span>
                 </div>
               )}
 
@@ -3503,6 +3518,7 @@ function applyIOSVideoRole(
   video: HTMLVideoElement,
   role: "active" | "standby"
 ) {
+  setVideoSourceActive(video, role === "active");
   if (role === "active") {
     video.preload = "auto";
     video.autoplay = true;

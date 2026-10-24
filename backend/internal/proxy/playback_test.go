@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,6 +116,71 @@ func TestPlaybackInvalidationDiscardsAnOlderDriversInflightResult(t *testing.T) 
 
 func testCloudSources(url string) []drives.PlaybackSource {
 	return []drives.PlaybackSource{{ID: "cloud", Kind: "transcoded", Protocol: "hls", Status: "ready", Link: &drives.StreamLink{URL: url}}}
+}
+
+type playbackPreparingDrive struct {
+	playbackTestDrive
+	prepares atomic.Int32
+	started  chan struct{}
+	unblock  chan struct{}
+}
+
+type observedPlaybackWait struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *observedPlaybackWait) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func (d *playbackPreparingDrive) PreparePlayback(ctx context.Context, _ string) ([]drives.PlaybackSource, error) {
+	if d.prepares.Add(1) == 1 {
+		close(d.started)
+	}
+	select {
+	case <-d.unblock:
+		return testCloudSources("https://ready.example/index.m3u8"), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestPreparationCoalescesSurvivesCancellationAndReplacesQueryCache(t *testing.T) {
+	d := &playbackPreparingDrive{
+		playbackTestDrive: playbackTestDrive{result: []drives.PlaybackSource{{ID: "cloud", Status: "processing"}}},
+		started:           make(chan struct{}), unblock: make(chan struct{}),
+	}
+	registry := NewRegistry()
+	registry.Set("115", d)
+	p := New(registry)
+	ctx := context.Background()
+	p.PlaybackSources(ctx, "115", "file", false)
+	if d.prepares.Load() != 0 {
+		t.Fatal("query submitted preparation")
+	}
+	cancelCtx, cancel := context.WithCancel(ctx)
+	first := make(chan error, 1)
+	go func() { _, err := p.PreparePlaybackSources(cancelCtx, "115", "file"); first <- err }()
+	<-d.started
+	cancel()
+	if err := <-first; err != context.Canceled {
+		t.Fatalf("caller cancellation=%v", err)
+	}
+	second := make(chan error, 1)
+	waitCtx := &observedPlaybackWait{Context: ctx, waiting: make(chan struct{})}
+	go func() { _, err := p.PreparePlaybackSources(waitCtx, "115", "file"); second <- err }()
+	<-waitCtx.waiting
+	close(d.unblock)
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	sources, err := p.PlaybackSources(ctx, "115", "file", false)
+	if err != nil || sources[0].Link == nil || sources[0].Link.URL != "https://ready.example/index.m3u8" || d.prepares.Load() != 1 {
+		t.Fatalf("sources=%+v err=%v preparations=%d", sources, err, d.prepares.Load())
+	}
 }
 
 type playbackOriginalDrive struct {

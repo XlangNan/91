@@ -264,7 +264,7 @@ test("shorts exposes media failures separately from pause and retries in place",
   assert.match(shortsPageSource, /exposePlaybackFailure\("loop-restart"\);/);
   assert.match(
     shortsPageSource,
-    /\{paused &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(/
+    /\{paused &&\s*!sourceState\?\.processing &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(/
   );
   assert.match(
     shortsPageSource,
@@ -462,7 +462,7 @@ test("shorts play pause does not render transient center hud", () => {
   assert.doesNotMatch(shortsCssSource, /@keyframes shorts-hud-pop/);
   assert.match(
     shortsPageSource,
-    /\{paused &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(\s*<div className="shorts-slide__paused"/
+    /\{paused &&\s*!sourceState\?\.processing &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(\s*<div className="shorts-slide__paused"/
   );
   assert.match(
     shortsPageSource,
@@ -709,7 +709,7 @@ test("shorts hidden overlay keeps only the concise confirmation", () => {
   );
   assert.match(
     shortsPageSource,
-    /\{paused &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(/
+    /\{paused &&\s*!sourceState\?\.processing &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(/
   );
   assert.doesNotMatch(
     shortsPageSource,
@@ -922,7 +922,7 @@ test("iOS preloads the next video on a standby element and promotes it on swipe"
   );
   assert.match(
     shortsPageSource,
-    /standby\.dataset\.shortsVideoId = nextItem\.id;\s*standby\.poster = nextItem\.poster;\s*attachVideoSource\(standby, nextItem\.videoSrc, nextItem\.playbackUrl\);/
+    /standby\.dataset\.shortsVideoId = nextItem\.id;\s*standby\.poster = nextItem\.poster;\s*attachVideoSource\(standby, nextItem\.videoSrc, nextItem\.playbackUrl, \{ active: false \}\);/
   );
   // The standby parks inside the next slide's slot, so landing there is a pure
   // ref swap with no DOM move and no src reset.

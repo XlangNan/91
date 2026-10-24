@@ -87,6 +87,8 @@ type Driver struct {
 	generationSession  *generationStreamSession
 	hlsClient          *http.Client
 	hlsMasterBaseURL   string
+	playbackMu         sync.Mutex
+	playbackAttempts   map[string]*playbackPreparationAttempt
 }
 
 type Config struct {
@@ -123,6 +125,7 @@ func New(c Config) *Driver {
 		generationSession:  &generationStreamSession{},
 		hlsClient:          streamhttp.NewClient(20 * time.Second),
 		hlsMasterBaseURL:   p115HLSMasterBaseURL,
+		playbackAttempts:   make(map[string]*playbackPreparationAttempt),
 	}
 }
 
