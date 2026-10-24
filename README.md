@@ -63,19 +63,12 @@ docker compose logs -f                                  # 查看日志
 
 ## 数据默认存放位置
 
-**一键脚本部署**
-
-- 运行配置 `/opt/video-site-91/config.yaml`
-- 数据库 `/opt/video-site-91/data/video-site.db`
-- Telegram视频 `/opt/video-site-91/data/telegram/library/`
-- 其他数据 `/opt/video-site-91/data/`
-
-**Docker Compose部署**
-
-- 运行配置 `/root/video-site-91/data/config.yaml`
-- 数据库 `/root/video-site-91/data/video-site.db`
-- Telegram视频 `/root/video-site-91/data/telegram/library/`
-- 其他数据 `/root/video-site-91/data/`
+| 数据类型 | 一键脚本部署 | Docker Compose 部署 |
+| --- | --- | --- |
+| 运行配置 | `/opt/video-site-91/config.yaml` | `/root/video-site-91/data/config.yaml` |
+| 数据库 | `/opt/video-site-91/data/video-site.db` | `/root/video-site-91/data/video-site.db` |
+| Telegram 视频 | `/opt/video-site-91/data/telegram/library/` | `/root/video-site-91/data/telegram/library/` |
+| 其他数据 | `/opt/video-site-91/data/` | `/root/video-site-91/data/` |
 
 数据库：存放视频信息、账号、密码、网盘凭证、视频的播放/点赞统计等
 
@@ -112,9 +105,9 @@ docker compose logs -f                                  # 查看日志
 
 ## 致谢
 
-- [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) — 参考其页面设计
-- [ArtPlayer](https://github.com/zhw2590582/ArtPlayer) — 当前项目使用的视频播放器
-- [OpenList](https://github.com/OpenListTeam/OpenList) — 参考其网盘接口
+- [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) — 参考页面设计
+- [ArtPlayer](https://github.com/zhw2590582/ArtPlayer) — 项目使用的播放器
+- [OpenList](https://github.com/OpenListTeam/OpenList) — 参考部分网盘接口
 
 ## 捐赠
 
