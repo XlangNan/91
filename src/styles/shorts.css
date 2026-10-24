@@ -742,28 +742,6 @@ html.shorts-document-scroll.is-pager-driven body {
    切屏过程中屏幕上会有两组文字同时在淡入淡出。 */
 
 /* 来源云盘圆形徽章，也是当前视频的详情链接。 */
-.shorts-source-control {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  width: 44px;
-  color: #fff;
-  font-size: 11px;
-}
-
-.shorts-source-control select {
-  width: 90px;
-  min-height: 32px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 8px;
-  padding: 4px;
-  background: #222;
-  color: #fff;
-  font: inherit;
-  cursor: pointer;
-}
-
 .shorts-drive-badge {
   flex: 0 0 auto;
   width: 44px;

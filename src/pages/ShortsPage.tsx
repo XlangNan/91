@@ -28,11 +28,8 @@ import {
   PLAYBACK_SOURCE_ERROR,
   PLAYBACK_SOURCE_READY,
   PLAYBACK_SOURCE_CHANGE,
-  PLAYBACK_MODES,
   playbackSourceState,
-  playbackStateLabel,
   selectPlaybackMode,
-  type PlaybackMode,
   type PlaybackState,
   retryVideoSource,
   videoSourceLoading,
@@ -3341,24 +3338,6 @@ function ShortsSlideImpl({
               className="shorts-slide__actions"
               onClick={(e) => e.stopPropagation()}
             >
-              {isActive && sourceState?.sources.some((source) => source.kind === "transcoded") && (
-                <label className="shorts-source-control" data-shorts-no-swipe=""
-                  onPointerDown={(event) => event.stopPropagation()}>
-                  <span>播放方式</span>
-                  <select aria-label="播放方式" value={sourceState.mode}
-                    title={playbackStateLabel(sourceState)}
-                    onChange={(event) => {
-                      const video = getVideoElement();
-                      if (video) selectPlaybackMode(video, event.target.value as PlaybackMode);
-                    }}>
-                    {PLAYBACK_MODES.map((mode) => (
-                      <option key={mode.value} value={mode.value}>
-                        {mode.value === "auto" && sourceState.mode === "auto" ? playbackStateLabel(sourceState) : mode.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
               {/* 云盘来源徽章同时是当前视频唯一的详情入口。 */}
               <ShortsTooltip label="来源" shortcut={SHORTS_ACTION_SHORTCUTS.source} placement="left" enabled={isDesktop}>
                 <Link
