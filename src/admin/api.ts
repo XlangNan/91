@@ -1408,7 +1408,7 @@ export type GPUStatus = {
   enabled: boolean;
   checked: boolean;
   available: boolean;
-  backend?: "vaapi" | "cuda";
+  backend?: "vaapi" | "cuda" | "rkmpp";
   device?: string;
   name?: string;
   reason?: string;

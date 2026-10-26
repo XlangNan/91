@@ -87,7 +87,7 @@ func (h *Hardware) check(ctx context.Context, force bool) HardwareStatus {
 	if ctx.Err() != nil {
 		s := h.Status()
 		s.Available = false
-		s.Reason = "GPU 检测超时或已取消，请重试"
+		s.Reason = "硬件加速检测超时或已取消，请重试"
 		return s
 	}
 	h.mu.Lock()
@@ -126,6 +126,30 @@ func (h *Hardware) snapshot() *hardwareBackend {
 }
 
 func (h *Hardware) detect(ctx context.Context) (*hardwareBackend, error) {
+	return h.probeCandidates(ctx, hardwareCandidates("/dev"))
+}
+
+func hardwareCandidates(deviceDir string) []*hardwareBackend {
+	devices, _ := filepath.Glob(filepath.Join(deviceDir, "dri", "renderD*"))
+	candidates := make([]*hardwareBackend, 0, len(devices)*2+2)
+	for _, node := range []string{"mpp_service", "mpp-service"} {
+		device := filepath.Join(deviceDir, node)
+		if info, err := os.Stat(device); err == nil && !info.IsDir() {
+			candidates = append(candidates, &hardwareBackend{kind: "rkmpp", device: device})
+			break
+		}
+	}
+	for _, device := range devices {
+		candidates = append(candidates,
+			&hardwareBackend{kind: "vaapi", device: device},
+			// Some Intel generations only expose the low-power H.264 entrypoint.
+			&hardwareBackend{kind: "vaapi", device: device, lowPower: true},
+		)
+	}
+	return append(candidates, &hardwareBackend{kind: "cuda", device: "0"})
+}
+
+func (h *Hardware) probeCandidates(ctx context.Context, candidates []*hardwareBackend) (*hardwareBackend, error) {
 	dir, err := os.MkdirTemp("", "91-gpu-probe-*")
 	if err != nil {
 		return nil, fmt.Errorf("无法创建 GPU 检测文件：%w", err)
@@ -139,18 +163,10 @@ func (h *Hardware) detect(ctx context.Context) (*hardwareBackend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("FFmpeg 检测样片生成失败：%s", probeError(err, out))
 	}
-	devices, _ := filepath.Glob("/dev/dri/renderD*")
-	candidates := make([]*hardwareBackend, 0, len(devices)+1)
-	for _, device := range devices {
-		candidates = append(candidates, &hardwareBackend{kind: "vaapi", device: device})
-		// Some Intel generations only expose the low-power H.264 entrypoint;
-		// older Intel and AMD devices may only support the standard entrypoint.
-		candidates = append(candidates, &hardwareBackend{kind: "vaapi", device: device, lowPower: true})
-	}
-	candidates = append(candidates, &hardwareBackend{kind: "cuda", device: "0"})
 	failures := make([]string, 0, len(candidates)+1)
-	if len(devices) == 0 {
+	if len(candidates) == 1 && candidates[0].kind == "cuda" {
 		failures = append(failures, "VAAPI：未找到 /dev/dri/renderD* 设备，请检查设备映射")
+		failures = append(failures, "Rockchip：未找到 /dev/mpp_service 或 /dev/mpp-service，请检查设备映射")
 	}
 	for _, backend := range candidates {
 		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -189,6 +205,9 @@ func (b *hardwareBackend) inputOptions() []string {
 	if b == nil {
 		return nil
 	}
+	if b.kind == "rkmpp" {
+		return []string{"-hwaccel", "rkmpp", "-hwaccel_output_format", "drm_prime"}
+	}
 	return []string{
 		"-init_hw_device", b.kind + "=gpu:" + b.device,
 		"-filter_hw_device", "gpu",
@@ -201,7 +220,19 @@ func (b *hardwareBackend) inputOptions() []string {
 // Download only the resized image. Fade and JPEG range conversion use the
 // existing software filters, so full-resolution frames stay on the GPU.
 func (b *hardwareBackend) downloadFilter(width int) string {
-	return "scale_" + b.kind + "=w=" + strconv.Itoa(width) + ":h=-2:format=nv12,hwdownload,format=nv12"
+	scaler := "scale_" + b.kind
+	if b.kind == "rkmpp" {
+		scaler = "scale_rkrga"
+	}
+	return scaler + "=w=" + strconv.Itoa(width) + ":h=-2:format=nv12,hwdownload,format=nv12"
+}
+
+func (b *hardwareBackend) encoderInputFilter() string {
+	// MPP accepts software NV12 after fade; VAAPI/NVENC need hardware frames.
+	if b.kind == "rkmpp" {
+		return "format=nv12"
+	}
+	return "format=nv12,hwupload"
 }
 
 func (g *Generator) thumbnailFilter() string {
@@ -215,7 +246,7 @@ func (g *Generator) thumbnailFilter() string {
 func (g *Generator) segmentFilter(fade bool, duration float64) string {
 	filter := teaserSegmentVideoFilter(g.cfg.Width, fade, duration)
 	if g.hardware != nil {
-		filter = g.hardware.downloadFilter(g.cfg.Width) + "," + filter + ",format=nv12,hwupload"
+		filter = g.hardware.downloadFilter(g.cfg.Width) + "," + filter + "," + g.hardware.encoderInputFilter()
 	}
 	return filter
 }
@@ -223,6 +254,9 @@ func (g *Generator) segmentFilter(fade bool, duration float64) string {
 func (g *Generator) encoderOptions() []string {
 	if g.hardware == nil {
 		return []string{"-c:v", "libx264", "-preset", "veryfast", "-crf", "28"}
+	}
+	if g.hardware.kind == "rkmpp" {
+		return []string{"-c:v", "h264_rkmpp", "-rc_mode", "CQP", "-qp_init", "28"}
 	}
 	if g.hardware.kind == "vaapi" {
 		options := []string{"-c:v", "h264_vaapi", "-qp", "28"}

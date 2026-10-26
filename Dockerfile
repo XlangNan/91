@@ -1,5 +1,21 @@
-# ---- Stage 1: Build frontend ----
-FROM node:24.22.1-slim AS frontend
+# Fixed upstream ARM64 binaries include MPP/RGA and libx264. Download on the
+# builder architecture; only the rockchip target depends on this stage.
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS rockchip-media
+ARG TARGETARCH
+RUN test "$TARGETARCH" = arm64 \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /media
+RUN curl -fL --retry 3 https://github.com/MarcA711/Rockchip-FFmpeg-Builds/releases/download/6.1-11/ffmpeg -o ffmpeg \
+    && curl -fL --retry 3 https://github.com/MarcA711/Rockchip-FFmpeg-Builds/releases/download/6.1-11/ffprobe -o ffprobe \
+    && printf '%s\n' \
+      '2849e8800ed8e7cd2a9ee9c5cff6b9abc325d2400f3fe755d6bd6d0ad4c87a91  ffmpeg' \
+      '402b142b0ac1c8e7eeb0f9cbafc18b85fbcb286e4ed0b0be1da50454920ff8b1  ffprobe' \
+      | sha256sum -c - \
+    && chmod 755 ffmpeg ffprobe
+
+# ---- Build frontend ----
+FROM --platform=$BUILDPLATFORM node:24.22.1-slim AS frontend
 
 WORKDIR /app
 
@@ -13,8 +29,10 @@ COPY public/ public/
 COPY src/ src/
 RUN npm run build
 
-# ---- Stage 2: Build backend ----
-FROM golang:1.27.3-bookworm AS backend
+# ---- Build backend ----
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS backend
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /app/backend
 
@@ -23,10 +41,10 @@ COPY backend/vendor/ vendor/
 COPY backend/cmd/ cmd/
 COPY backend/internal/ internal/
 COPY backend/config_template.go backend/config.example.yaml ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
-# ---- Stage 3: Runtime ----
-FROM debian:bookworm-slim AS runtime
+# ---- Shared application runtime ----
+FROM debian:bookworm-slim AS application
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -59,7 +77,7 @@ COPY --from=backend /out/server ./server
 COPY --from=frontend /app/dist ./dist
 COPY backend/config.example.yaml ./config.example.yaml
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY docker-compose.yml docker-compose.gpu-nvidia.yml docker-compose.gpu-vaapi.yml tg-docker-compose.yml /usr/local/share/video-site-91/deploy/
+COPY docker-compose.yml docker-compose.gpu-nvidia.yml docker-compose.gpu-vaapi.yml docker-compose.gpu-rockchip.yml tg-docker-compose.yml /usr/local/share/video-site-91/deploy/
 
 ARG VERSION=dev
 
@@ -77,3 +95,21 @@ EXPOSE 9191
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["./server"]
+
+# ---- Rockchip runtime (linux/arm64 only) ----
+FROM application AS rockchip
+LABEL io.video-site-91.media-variant="rockchip"
+COPY --from=rockchip-media /media/ffmpeg /media/ffprobe /usr/local/bin/
+# Verify the bundled tools without requiring media hardware during the build.
+RUN python3 - <<'PY'
+import subprocess
+for flag, names in [('-hwaccels', ['rkmpp']), ('-encoders', ['h264_rkmpp', 'libx264']), ('-filters', ['scale_rkrga'])]:
+    output = subprocess.check_output(['ffmpeg', '-hide_banner', flag], text=True)
+    for name in names:
+        assert name in output, f'Missing FFmpeg capability: {name}'
+subprocess.run(['ffprobe', '-version'], check=True)
+PY
+
+# Keep ordinary builds on the standard runtime, including generic ARM64 hosts.
+FROM application AS runtime
+LABEL io.video-site-91.media-variant="standard"

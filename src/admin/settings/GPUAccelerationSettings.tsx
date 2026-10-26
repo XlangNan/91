@@ -13,11 +13,11 @@ function shortGPUName(name: string) {
   const model = name.match(/\[([^\]]*(?:Graphics|Radeon|RTX|RX|Arc|Iris|UHD)[^\]]*)\]/i)?.[1] ?? name;
   const compact = model
     .replace(/\((?:R|TM)\)|[®™]/gi, "")
-    .replace(/^(?:NVIDIA\s+|Intel(?:\s+Corporation)?\s+|AMD\s+)/i, "")
+    .replace(/^(?:NVIDIA\s+|Intel(?:\s+Corporation)?\s+|AMD\s+|Rockchip\s+)/i, "")
     .replace(/^(?:GeForce|Radeon)\s+/i, "")
     .replace(/\s*\b(?:Laptop GPU|Laptop|Graphics)\b/gi, "")
     .trim();
-  return compact && compact !== "GPU" ? compact : name;
+  return compact && compact !== "GPU" && compact !== "VPU" ? compact : name;
 }
 
 export function GPUAccelerationSettings({ enabled, disabled, onChange, onError }: Props) {
@@ -61,11 +61,11 @@ export function GPUAccelerationSettings({ enabled, disabled, onChange, onError }
       if (next.available) {
         onChangeRef.current(true);
       } else {
-        onError("未检测到 GPU");
+        onError("未检测到可用的加速硬件");
       }
     } catch (cause) {
       if (!controller.signal.aborted) {
-        onError(cause instanceof Error ? cause.message : "GPU 检测失败");
+        onError(cause instanceof Error ? cause.message : "硬件加速检测失败");
       }
     } finally {
       if (!controller.signal.aborted) {
@@ -82,7 +82,7 @@ export function GPUAccelerationSettings({ enabled, disabled, onChange, onError }
       <SettingsRow
         label={
           <span className="admin-config-gpu__label">
-            <span id="generation-gpu-label">GPU 硬件加速</span>
+            <span id="generation-gpu-label">硬件加速</span>
             <span
               id="generation-gpu-detail"
               className="admin-config-gpu__detail"

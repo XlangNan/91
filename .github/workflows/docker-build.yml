@@ -82,7 +82,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build Docker (${{ matrix.arch }})
+    name: Build Docker (${{ matrix.id }})
     needs: prepare
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -92,9 +92,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          - id: amd64
+            arch: amd64
+            target: runtime
             runner: ubuntu-24.04
-          - arch: arm64
+          - id: arm64
+            arch: arm64
+            target: runtime
+            runner: ubuntu-24.04-arm
+          - id: rockchip-arm64
+            arch: arm64
+            target: rockchip
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
@@ -116,14 +124,15 @@ jobs:
         uses: docker/build-push-action@v7.4.0
         with:
           context: .
+          target: ${{ matrix.target }}
           platforms: linux/${{ matrix.arch }}
           labels: ${{ needs.prepare.outputs.labels }}
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
-          # Only the publish job updates shared tags after both builds succeed.
+          # Only the publish job updates shared tags after all builds succeed.
           outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
-          cache-from: type=gha,scope=video-site-91-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=video-site-91-${{ matrix.arch }}
+          cache-from: type=gha,scope=video-site-91-${{ matrix.id }}
+          cache-to: type=gha,mode=max,scope=video-site-91-${{ matrix.id }}
 
       - name: Export image digest
         if: github.event_name != 'pull_request'
@@ -138,7 +147,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: docker-digests-${{ matrix.arch }}
+          name: docker-digests-${{ matrix.id }}
           archive: true
           path: ${{ runner.temp }}/digests/digest.txt
           if-no-files-found: error
@@ -187,10 +196,17 @@ jobs:
             fi
             sources+=("$IMAGE@$digest")
           done
+          rockchip_digest=$(cat "$RUNNER_TEMP/digests/docker-digests-rockchip-arm64/digest.txt")
+          if [[ ! "$rockchip_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Invalid image digest for rockchip-arm64" >&2
+            exit 1
+          fi
           tags=()
+          rockchip_tags=()
           while IFS= read -r tag; do
             if [[ -n "$tag" ]]; then
               tags+=(--tag "$tag")
+              rockchip_tags+=(--tag "${tag}-rockchip")
             fi
           done <<< "$TAGS"
           if (( ${#tags[@]} == 0 )); then
@@ -198,3 +214,4 @@ jobs:
             exit 1
           fi
           docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          docker buildx imagetools create "${rockchip_tags[@]}" "$IMAGE@$rockchip_digest"

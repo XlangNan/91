@@ -16,6 +16,7 @@ GPU_CHOICES="[]"
 ACTION=""
 SELECTED_GPU="keep"
 SELECTED_GPU_DEVICE=""
+SELECTED_GPU_DEVICES="[]"
 SELECTED_GPU_LABEL=""
 TELEGRAM_MODE="keep"
 TELEGRAM_SERVICE="telegram-bot-api"
@@ -57,15 +58,22 @@ def device_target:
 
 def is_dri: . == "/dev/dri" or startswith("/dev/dri/");
 
-def is_gpu_device: is_dri or startswith("/dev/nvidia");
+def is_rockchip_device:
+  . == "/dev/mpp_service" or . == "/dev/mpp-service" or
+  . == "/dev/rga" or . == "/dev/dma_heap" or startswith("/dev/dma_heap/");
+
+def is_gpu_device: is_dri or is_rockchip_device or startswith("/dev/nvidia");
 
 def is_gpu_mapping: (device_source | is_gpu_device) or (device_target | is_gpu_device);
 
 def gpu_modes:
+  any((.devices // [])[]; (device_source | is_rockchip_device) or
+      (device_target | is_rockchip_device)) as $rockchip |
   [if ((.gpus // [] | length) > 0 or .runtime == "nvidia" or
        any((.deploy.resources.reservations.devices // [])[]; .driver == "nvidia"))
    then "nvidia" else empty end,
-   if any((.devices // [])[]; (device_source | is_dri) or (device_target | is_dri))
+   if $rockchip then "rockchip" else empty end,
+   if $rockchip == false and any((.devices // [])[]; (device_source | is_dri) or (device_target | is_dri))
    then "vaapi" else empty end];
 
 def remove_gpu:
@@ -189,7 +197,7 @@ def validate_telegram:
     error("Telegram Bot API needs a valid TELEGRAM_HTTP_PORT")
   else . end;
 
-def configure_gpu($mode; $device; $template):
+def configure_gpu($mode; $device; $devices; $template):
   .services[$service] |= (
     if $mode == "keep" then .
     elif $mode == "cpu" then remove_gpu
@@ -198,6 +206,8 @@ def configure_gpu($mode; $device; $template):
       remove_gpu |
       if $mode == "vaapi" then
         .devices = ((.devices // []) + [{source: $device, target: $device, permissions: "rwm"}])
+      elif $mode == "rockchip" then
+        .devices = ((.devices // []) + ($devices | map({source: ., target: ., permissions: "rwm"})))
       else
         .deploy.resources.reservations.devices =
           ((.deploy.resources.reservations.devices // []) +
@@ -277,7 +287,7 @@ usage() {
       else
         printf 'Update 91 using its configured image; keep config and data.\n\n'
       fi
-      printf '  --image IMAGE          Image reference, stable or main\n'
+      printf '  --image IMAGE          Image reference, stable, main, stable-rockchip or main-rockchip\n'
       ;;
     gpu)
       cat <<'EOF'
@@ -285,6 +295,7 @@ Usage: bash 91-docker.sh gpu
 
 Configure GPU access; choose a GPU when multiple are available.
 Use CPU if none are usable. Requires a local Linux Docker Engine.
+Rockchip requires install/update --image stable-rockchip first.
 EOF
       ;;
     telegram)
@@ -349,7 +360,7 @@ parse_args() {
     esac
   done
   case "$REQUESTED_IMAGE" in
-    main|stable) REQUESTED_IMAGE="$IMAGE_REPOSITORY:$REQUESTED_IMAGE" ;;
+    main|stable|main-rockchip|stable-rockchip) REQUESTED_IMAGE="$IMAGE_REPOSITORY:$REQUESTED_IMAGE" ;;
   esac
 }
 
@@ -658,6 +669,19 @@ select_gpu() {
   SELECTED_GPU=$(json -r '.mode' <<< "$selected")
   SELECTED_GPU_DEVICE=$(json -r '.device' <<< "$selected")
   SELECTED_GPU_LABEL=$(json -r '.label' <<< "$selected")
+  SELECTED_GPU_DEVICES=$(json '.devices // []' <<< "$selected")
+}
+
+rockchip_devices() {
+  local device mpp=""
+  for device in /dev/mpp_service /dev/mpp-service; do
+    if [[ -c "$device" ]]; then mpp="$device"; break; fi
+  done
+  [[ -n "$mpp" ]] || return 0
+  printf '%s\n' "$mpp"
+  for device in /dev/dri /dev/dma_heap /dev/rga; do
+    if [[ -e "$device" ]]; then printf '%s\n' "$device"; fi
+  done
 }
 
 detect_host_gpu() {
@@ -670,6 +694,23 @@ detect_host_gpu() {
   [[ "$(uname -s)" == Linux && "$endpoint" == unix://* && "$operating_system" != *"docker desktop"* ]] ||
     die "GPU detection requires a local Linux Docker Engine; configure GPU access in Compose for other Docker hosts"
   rootless=$(json -r 'any((.SecurityOptions // [])[]; contains("rootless"))' < "$info")
+  devices=$(rockchip_devices)
+  if [[ -n "$devices" ]]; then
+    local mpp inaccessible=false
+    mpp="${devices%%$'\n'*}"
+    while IFS= read -r device; do
+      if [[ "$rootless" == true && ( ! -r "$device" || ! -w "$device" ) ]]; then
+        inaccessible=true
+        log "Cannot access $device; check Rockchip media device permissions"
+      fi
+    done <<< "$devices"
+    if [[ "$inaccessible" == false ]]; then
+      devices=$(json -Rn '[inputs | select(length > 0)]' <<< "$devices")
+      GPU_CHOICES=$(json --arg device "$mpp" --argjson devices "$devices" '
+        . + [{mode: "rockchip", device: $device, label: "Rockchip MPP / RGA", devices: $devices}]
+      ' <<< "$GPU_CHOICES")
+    fi
+  fi
   while IFS= read -r device; do
     [[ -n "$device" ]] || continue
     vendor=$(render_vendor "$device" 2>/dev/null) || continue
@@ -821,6 +862,9 @@ prepare_gpu() {
   detect_host_gpu "$WORK_DIR/docker-info.json"
   select_gpu
   case "$SELECTED_GPU" in
+    rockchip)
+      log "Selected Rockchip media devices; the application's hardware acceleration switch will not be changed"
+      ;;
     nvidia|vaapi)
       log "Selected GPU: $SELECTED_GPU_LABEL ($SELECTED_GPU, $SELECTED_GPU_DEVICE); the application's GPU switch will not be changed"
       load_deployment_templates
@@ -835,10 +879,11 @@ build_candidate() {
   local -a candidate_files
   json -n --slurpfile template "$WORK_DIR/template.json" --slurpfile local "$WORK_DIR/local.json" \
     --slurpfile gpu "$WORK_DIR/gpu.json" --arg mode "$SELECTED_GPU" --arg device "$SELECTED_GPU_DEVICE" --arg image "$TARGET_IMAGE" \
+    --argjson devices "$SELECTED_GPU_DEVICES" \
     --arg action "$ACTION" --arg requested_image "$REQUESTED_IMAGE" '
       (if $action == "install" or $action == "update" then merge_deployment($template[0]; $local[0]) else $local[0] end) |
       (if $action == "install" or $requested_image != "" then .services[$service].image = $image else . end) |
-      configure_gpu($mode; $device; $gpu[0])
+      configure_gpu($mode; $device; $devices; $gpu[0])
     ' > "$WORK_DIR/proposed.json"
   if [[ "$TELEGRAM_MODE" == enable ]]; then prepare_telegram; fi
   compose_with "$WORK_DIR/proposed.json" -- config --format yaml "${RAW_OPTIONS[@]}" > "$WORK_DIR/candidate.yml"
@@ -859,10 +904,16 @@ validate_candidate() {
     (if $mode == "keep" then ($before[0].services[$service] | gpu_modes)
      elif $mode == "cpu" then [] else [$mode] end)
   ' < "$WORK_DIR/resolved.json" >/dev/null || die "An overlay conflicts with the GPU configuration; update that overlay first"
+  if json -e '.services[$service] | gpu_modes | index("rockchip") != null' < "$WORK_DIR/resolved.json" >/dev/null; then
+    local variant
+    variant=$(docker image inspect --format '{{ index .Config.Labels "io.video-site-91.media-variant" }}' "$TARGET_IMAGE_ID")
+    [[ "$variant" == rockchip ]] ||
+      die "Rockchip devices require a Rockchip image; run update --image stable-rockchip before gpu (custom images need the io.video-site-91.media-variant=rockchip label)"
+  fi
   if [[ "$ACTION" == gpu && "$SELECTED_GPU" != cpu ]]; then
     # Matching the backend type is insufficient: overlays must not expose other
     # GPUs or override the card the user selected.
-    json -e --arg mode "$SELECTED_GPU" --arg device "$SELECTED_GPU_DEVICE" '
+    json -e --arg mode "$SELECTED_GPU" --arg device "$SELECTED_GPU_DEVICE" --argjson devices "$SELECTED_GPU_DEVICES" '
       .services[$service] |
       ((.gpus // [] | length) == 0) and .runtime != "nvidia" and
       .privileged != true and
@@ -872,6 +923,10 @@ validate_candidate() {
       if $mode == "vaapi" then
         [.devices[]? | select(is_gpu_mapping)] ==
           [{source: $device, target: $device, permissions: "rwm"}]
+      elif $mode == "rockchip" then
+        [.devices[]? | select(is_gpu_mapping)] ==
+          ($devices | map({source: ., target: ., permissions: "rwm"})) and
+        all((.deploy.resources.reservations.devices // [])[]; .driver != "nvidia")
       else
         ([.devices[]? | select(is_gpu_mapping)] | length) == 0 and
         ([.deploy.resources.reservations.devices[]? | select(.driver == "nvidia")] |
@@ -920,7 +975,7 @@ apply_candidate() {
   fi
   NEEDS_ROLLBACK=false
   log "Deployment complete. Compose configuration: $TARGET"
-  case "$SELECTED_GPU" in nvidia|vaapi) log "Enable GPU in the administration panel when ready" ;; esac
+  case "$SELECTED_GPU" in nvidia|vaapi|rockchip) log "Enable hardware acceleration in the administration panel when ready" ;; esac
   if [[ "$TELEGRAM_MODE" == enable ]]; then
     log "Telegram Bot API deployed. Configure the Bot Token and allowed user IDs, then enable Telegram in the 91 administration panel."
   fi

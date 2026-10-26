@@ -15,9 +15,9 @@ go build -o server ./cmd/server
 
 ## GPU 媒体生成
 
-默认使用 CPU。在配置面板的「媒体生成」中开启「GPU 硬件加速」，对应 `generation.use_gpu: true`。保存后用于后续封面和预览任务，无需重启；正在执行的任务沿用开始时的设置，已有资源不会自动重生成。
+默认使用 CPU。在配置面板的「媒体生成」中开启「硬件加速」，对应 `generation.use_gpu: true`。保存后用于后续封面和预览任务，无需重启；正在执行的任务沿用开始时的设置，已有资源不会自动重生成。
 
-当前自动检测 Linux VAAPI（Intel / AMD）和 NVIDIA NVDEC / NVENC。开启 GPU 开关时，检测会实际生成 JPEG 封面和 H.264 预览，验证设备、驱动、FFmpeg 滤镜和编码器，而非仅检查编码器列表。开关标题旁在检测时显示「检测中」，开启且检测成功后显示显卡简称，悬停可查看完整名称，关闭开关即隐藏名称；读取名称失败不影响 GPU 能力检测结果。开启时若没有可用 GPU，开关保持关闭，右下角 Toast 提示「未检测到 GPU」；检测请求失败也通过 Toast 提示，后台读取状态失败不弹出提示。GPU 卡片下方不显示错误信息或 CPU 回退统计。视频不兼容或硬件处理失败时，整个资源任务回退 CPU，原因记录在运行日志；网络错误继续使用原有重试策略。
+当前自动检测 Linux VAAPI（Intel / AMD）、NVIDIA NVDEC / NVENC 和 Rockchip MPP / RGA。开启开关时，检测会实际生成 JPEG 封面和 H.264 预览，验证设备、驱动、FFmpeg 滤镜和编码器，而非仅检查编码器列表。开关标题旁在检测时显示「检测中」，开启且检测成功后显示硬件简称，悬停可查看完整名称，关闭开关即隐藏名称；读取名称失败不影响硬件能力检测结果。开启时若没有可用硬件，开关保持关闭，右下角 Toast 提示「未检测到可用的加速硬件」；检测请求失败也通过 Toast 提示，后台读取状态失败不弹出提示。卡片下方不显示错误信息或 CPU 回退统计。视频不兼容或硬件处理失败时，整个资源任务回退 CPU，原因记录在运行日志；网络错误继续使用原有重试策略。
 
 原生部署需要安装匹配的 GPU 驱动，并保证服务进程能访问设备。FFmpeg 需支持 `scale_vaapi` / `h264_vaapi` 或 `scale_cuda` / `h264_nvenc`；Intel 部分平台还需要完整的媒体驱动和固件。封面使用硬件解码和缩放后输出 JPEG；预览使用硬件解码、缩放和 H.264 编码，淡入淡出在缩小后的画面上处理。
 
@@ -32,6 +32,27 @@ docker compose -f docker-compose.yml -f docker-compose.gpu-nvidia.yml up -d
 ```
 
 启动后在面板开启 GPU 开关。没有可用设备时不能通过面板启用；如果恢复的配置或手动编辑的 YAML 已启用 GPU，但设备不可用，服务仍会启动并使用 CPU。当前不支持的其他硬件后端也会视为不可用。
+
+### Rockchip 独立镜像
+
+Rockchip 与其他平台共用应用代码、配置、数据目录和硬件加速开关；独立镜像只提供不同的媒体运行环境。普通镜像继续支持 AMD64 / ARM64；带 `-rockchip` 后缀的镜像只支持 Linux ARM64，例如 `ghcr.io/nianzhibai/91:stable-rockchip`、`main-rockchip`、`v0.3.7-rockchip`（版本标签随实际发布生成）。宿主机必须提供匹配的 MPP / RGA 内核驱动和设备权限；上游要求 Rockchip BSP/vendor 内核，列出的已测试版本为 5.10、6.1，普通 ARM64 主机不因此获得 Rockchip 加速。
+
+首次安装或从普通镜像切换：
+
+```bash
+# 首次安装；已有部署改为 bash 91-docker.sh update --image stable-rockchip
+bash 91-docker.sh install --image stable-rockchip
+# 检测本机设备，生成映射；不改变面板中的加速开关
+bash 91-docker.sh gpu
+```
+
+然后在面板开启「硬件加速」。脚本识别 `/dev/mpp_service` 或 `/dev/mpp-service`，并只映射实际存在的 `/dev/dri`、`/dev/dma_heap`、`/dev/rga`。无需特权容器。更新时直接运行 `bash 91-docker.sh update`，保留原镜像标签和设备映射；GPU 重新选择及 CPU 模式会清理原有媒体设备映射。切回普通镜像前应先移除 Rockchip 设备映射。脚本通过镜像标签 `io.video-site-91.media-variant=rockchip` 检查运行环境，防止映射仍在时误换普通镜像；自建镜像需要提供相同标签及媒体能力。
+
+手动 Compose 部署可使用 `docker compose -f docker-compose.yml -f docker-compose.gpu-rockchip.yml up -d`。附加文件选择 Rockchip 镜像并列出常见设备，使用前按宿主机实际情况调整设备路径；旧内核的 MPP 节点可能使用连字符。
+
+该后端使用 `-hwaccel rkmpp -hwaccel_output_format drm_prime` 解码，`scale_rkrga` 缩放并转换为 NV12，再下载缩小后的帧供 JPEG 转换或预览淡入淡出处理；预览交给 `h264_rkmpp` 编码。当前要求 MPP 与 RGA 完整管线可用，RGA 不可用或具体素材超出硬件能力时回退 CPU，不承诺所有芯片、分辨率及位深都可加速。设备名称优先从设备树 `compatible` 读取 SoC，失败时显示 `Rockchip VPU`。
+
+镜像通过同一个 Dockerfile 的 `rockchip` target 构建：`docker buildx build --platform linux/arm64 --target rockchip -t video-site-91:rockchip --load .`。当前固定使用 [Rockchip-FFmpeg-Builds 6.1-11](https://github.com/MarcA711/Rockchip-FFmpeg-Builds/releases/tag/6.1-11) 的 ARM64 FFmpeg / ffprobe，两者均校验 SHA256；MPP / RGA 已链接在该构建中，`libx264` 保留用于 CPU 回退。构建时检查 RKMPP、RGA、libx264 能力，普通构建默认使用 `runtime` target。原生部署可以自行安装相同能力的 FFmpeg，并通过 `preview.ffmpeg_path`、`preview.ffprobe_path` 指向配套工具。参考[上游运行要求](https://github.com/nyanmisaka/ffmpeg-rockchip#readme)及[编译说明](https://github.com/nyanmisaka/ffmpeg-rockchip/wiki/Compilation)。
 
 GPU 主机可执行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -run TestHardwareRealFFmpeg -v`，验证生产使用的封面与预览滤镜链。普通测试环境缺少 GPU 时跳过该实机测试。
 
@@ -98,13 +119,13 @@ bash 91-docker.sh update --telegram enable
 
 首次部署默认使用 `ghcr.io/nianzhibai/91:stable`，更新默认跟随现有服务的镜像引用；固定旧版本号时需用 `--image` 指定目标版本。脚本先拉取目标镜像，再创建一个不启动的临时容器读取配套部署模板，避免使用 `main` 分支配置搭配旧镜像；临时容器会在退出时删除，配置处理全程在宿主机执行。**需先发布包含更新后的 Dockerfile 和部署模板的镜像**；旧镜像没有模板时会退出并保留原配置。
 
-默认在本机 Linux Docker Engine 上检测 GPU：Intel/AMD 需要可用的 `/dev/dri/renderD*` 设备；NVIDIA 需要正常的驱动和已配置的 Docker NVIDIA 运行时。检测到硬件但依赖不齐会提示缺项，原本使用 CPU 的部署继续按 CPU 更新；已有 GPU 配置但环境不再满足条件时退出，避免重建出无法启动的容器。已有 GPU 选择和设备编号保持不变，新部署同时具备两种后端时优先 VAAPI，可用参数覆盖。远程 Docker 或 Docker Desktop 使用 `--gpu keep`；驱动和 Toolkit 仍由宿主机管理员安装。
+只有显式执行 `bash 91-docker.sh gpu` 时才检测本机 Linux Docker Engine 的媒体硬件：Intel/AMD 需要 `/dev/dri/renderD*`；NVIDIA 需要正常的驱动和 Docker NVIDIA 运行时；Rockchip 需要 MPP 设备及独立镜像，详见上文。多个候选会提示选择，不自动替用户选卡；没有候选时清理媒体设备映射并使用 CPU。普通安装和更新保留原有配置，不探测宿主机。远程 Docker 或 Docker Desktop 请手动配置设备；驱动、内核和 Toolkit 由宿主机管理员安装。
 
 脚本将需要新增的 GPU 配置直接写入原 Compose 文件，用户不必再下载 GPU 附加文件。它保留已有字段值、端口、数据挂载、环境变量引用、服务 `env_file`、其他服务和资源，新模板只补充缺失的默认配置。配置会经 Compose 重新序列化，注释、锚点和排版不保留；刻意省略的端口、挂载等本机部署字段不会被模板重新添加。默认加载的覆盖文件及 `COMPOSE_FILE` 也会保留使用；自定义 `-f` 文件需要按原顺序传入，GPU 或镜像选择与覆盖文件冲突时会退出而不覆盖文件。
 
 写入前会校验最终配置。更新时在同目录保留带时间戳的 `.bak-*` 原文件并原子替换；首次部署原子创建主文件，检测到其他进程刚刚创建的文件时退出，不覆盖它。`up --wait` 检查容器启动，更新启动失败会恢复原配置，并尝试用更新前的实际镜像 ID 恢复容器；首次部署启动失败则保留生成的配置和数据，便于排查，修复后可执行 `update` 或不带动作重试。容器没有健康检查时，`--wait` 仅确认容器运行，不等同于业务可用性检查。恢复不回滚数据库或应用数据；备份文件可能包含原配置中的敏感值，应与原配置一样保管。
 
-脚本不读取或修改应用的 `config.yaml`，不会自动打开 GPU 开关。更新成功后，在管理后台检测并开启「GPU 硬件加速」。自动写入的 GPU 配置会保留在主 Compose 文件中，之后普通镜像升级仍可使用 `docker compose pull && docker compose up -d`；需要同步新版部署模板时再次运行更新脚本。
+脚本不读取或修改应用的 `config.yaml`，不会自动打开 GPU 开关。更新成功后，在管理后台检测并开启「硬件加速」。自动写入的 GPU 配置会保留在主 Compose 文件中，之后普通镜像升级仍可使用 `docker compose pull && docker compose up -d`；需要同步新版部署模板时再次运行更新脚本。
 
 ## 目录
 

@@ -25,6 +25,12 @@ out=""
 for arg in "$@"; do out="$arg"; done
 case " $* " in
   *" -hwaccel "*)
+    if [ "$GPU_TEST_FAIL" = "probe" ]; then
+      case " $* " in
+        *" -hwaccel rkmpp "*)
+          case "$out" in *teaser-seg-*) printf "No such filter: scale_rkrga" >&2; exit 1 ;; esac ;;
+      esac
+    fi
     if [ "$GPU_TEST_PAUSE" = "yes" ] && [ ! -e "$GPU_TEST_MARKER" ]; then
       touch "$GPU_TEST_MARKER"
       while [ ! -e "$GPU_TEST_RELEASE" ]; do sleep 0.01; done
@@ -62,7 +68,11 @@ func TestHardwareProbeVerifiesBothAssetsAndCachesResults(t *testing.T) {
 		t.Fatalf("probe = %+v", s)
 	}
 	calls, _ := os.ReadFile(logPath)
-	for _, required := range []string{"testsrc2=", "-frames:v 1", "-hwaccel ", "teaser-seg-", "fade=t=in", "hwdownload", "hwupload"} {
+	requiredOptions := []string{"testsrc2=", "-frames:v 1", "-hwaccel ", "teaser-seg-", "fade=t=in", "hwdownload"}
+	if s.Backend != "rkmpp" {
+		requiredOptions = append(requiredOptions, "hwupload")
+	}
+	for _, required := range requiredOptions {
 		if !strings.Contains(string(calls), required) {
 			t.Fatalf("probe did not exercise %s:\n%s", required, calls)
 		}
@@ -84,57 +94,65 @@ func TestHardwareProbeVerifiesBothAssetsAndCachesResults(t *testing.T) {
 }
 
 func TestGPUThumbnailFailureRetriesCPUOnce(t *testing.T) {
-	h, gen, logPath := hardwareFixture(t)
-	h.checked, h.enabled = true, true
-	h.backend = &hardwareBackend{kind: "cuda", device: "0"}
-	t.Setenv("GPU_TEST_FAIL", "thumbnail")
-	path, err := gen.GenerateThumbnail(context.Background(), &drives.StreamLink{URL: "source.mp4"}, "video", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if data, _ := os.ReadFile(path); string(data) != "media-output" {
-		t.Fatal("CPU cover was not published")
-	}
-	calls, _ := os.ReadFile(logPath)
-	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], "-hwaccel cuda") || strings.Contains(lines[1], "-hwaccel") {
-		t.Fatalf("expected one GPU attempt then CPU:\n%s", calls)
-	}
-	if h.Status().FallbackCount != 1 {
-		t.Fatalf("fallbacks = %d", h.Status().FallbackCount)
+	for _, kind := range []string{"cuda", "rkmpp"} {
+		t.Run(kind, func(t *testing.T) {
+			h, gen, logPath := hardwareFixture(t)
+			h.checked, h.enabled = true, true
+			h.backend = &hardwareBackend{kind: kind, device: "0"}
+			t.Setenv("GPU_TEST_FAIL", "thumbnail")
+			path, err := gen.GenerateThumbnail(context.Background(), &drives.StreamLink{URL: "source.mp4"}, "video", 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if data, _ := os.ReadFile(path); string(data) != "media-output" {
+				t.Fatal("CPU cover was not published")
+			}
+			calls, _ := os.ReadFile(logPath)
+			lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+			if len(lines) != 2 || !strings.Contains(lines[0], "-hwaccel "+kind) || strings.Contains(lines[1], "-hwaccel") {
+				t.Fatalf("expected one GPU attempt then CPU:\n%s", calls)
+			}
+			if h.Status().FallbackCount != 1 {
+				t.Fatalf("fallbacks = %d", h.Status().FallbackCount)
+			}
+		})
 	}
 }
 
 func TestGPUMidPreviewFailureRestartsWholeAssetWithCPU(t *testing.T) {
-	h, gen, logPath := hardwareFixture(t)
-	h.checked, h.enabled = true, true
-	h.backend = &hardwareBackend{kind: "vaapi", device: "/dev/dri/renderD128"}
-	t.Setenv("GPU_TEST_FAIL", "segment")
-	path, err := gen.Generate(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls, _ := os.ReadFile(logPath)
-	var gpuSegments, cpuSegments int
-	for _, line := range strings.Split(string(calls), "\n") {
-		if !strings.Contains(line, "-vf") {
-			continue
-		}
-		if strings.Contains(line, "-hwaccel") {
-			gpuSegments++
-		} else {
-			cpuSegments++
-			if !strings.Contains(line, "-c:v libx264") {
-				t.Fatalf("CPU attempt retained hardware encoder: %s", line)
+	for _, kind := range []string{"vaapi", "rkmpp"} {
+		t.Run(kind, func(t *testing.T) {
+			h, gen, logPath := hardwareFixture(t)
+			h.checked, h.enabled = true, true
+			h.backend = &hardwareBackend{kind: kind, device: "/dev/dri/renderD128"}
+			t.Setenv("GPU_TEST_FAIL", "segment")
+			path, err := gen.Generate(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 300)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	}
-	if gpuSegments != 2 || cpuSegments != 4 || h.Status().FallbackCount != 1 {
-		t.Fatalf("GPU=%d CPU=%d status=%+v\n%s", gpuSegments, cpuSegments, h.Status(), calls)
-	}
-	entries, _ := os.ReadDir(gen.cfg.LocalDir)
-	if len(entries) != 1 || filepath.Join(gen.cfg.LocalDir, entries[0].Name()) != path {
-		t.Fatalf("partial GPU/CPU segments were not cleaned up: %v", entries)
+			calls, _ := os.ReadFile(logPath)
+			var gpuSegments, cpuSegments int
+			for _, line := range strings.Split(string(calls), "\n") {
+				if !strings.Contains(line, "-vf") {
+					continue
+				}
+				if strings.Contains(line, "-hwaccel") {
+					gpuSegments++
+				} else {
+					cpuSegments++
+					if !strings.Contains(line, "-c:v libx264") {
+						t.Fatalf("CPU attempt retained hardware encoder: %s", line)
+					}
+				}
+			}
+			if gpuSegments != 2 || cpuSegments != 4 || h.Status().FallbackCount != 1 {
+				t.Fatalf("GPU=%d CPU=%d status=%+v\n%s", gpuSegments, cpuSegments, h.Status(), calls)
+			}
+			entries, _ := os.ReadDir(gen.cfg.LocalDir)
+			if len(entries) != 1 || filepath.Join(gen.cfg.LocalDir, entries[0].Name()) != path {
+				t.Fatalf("partial GPU/CPU segments were not cleaned up: %v", entries)
+			}
+		})
 	}
 }
 

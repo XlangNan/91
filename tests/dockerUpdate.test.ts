@@ -15,8 +15,9 @@ const newImage = `sha256:${"b".repeat(64)}`;
 const oldTelegramImage = `sha256:${"c".repeat(64)}`;
 const vaapiDevice = "/dev/dri/renderD128";
 const nvidiaDevice = "GPU-11111111-1111-1111-1111-111111111111";
-type GPUChoice = { mode: "vaapi" | "nvidia"; device: string; label: string };
+type GPUChoice = { mode: "vaapi" | "nvidia" | "rockchip"; device: string; label: string; devices?: string[] };
 const defaultGPUs: Record<string, GPUChoice> = {
+  rockchip: { mode: "rockchip", device: "/dev/mpp_service", label: "Rockchip MPP / RGA", devices: ["/dev/mpp_service", "/dev/dri", "/dev/dma_heap", "/dev/rga"] },
   vaapi: { mode: "vaapi", device: vaapiDevice, label: "Intel GPU" },
   nvidia: { mode: "nvidia", device: nvidiaDevice, label: "NVIDIA RTX 4060" },
 };
@@ -112,6 +113,7 @@ if (args[0] === "compose") {
   if (state.changeDuringPull) writeFileSync(join(root, "docker-compose.yml"), "# concurrent edit\\n" + readFileSync(join(root, "docker-compose.yml"), "utf8"));
   if (state.createConfigDuringPull) writeFileSync(join(root, "docker-compose.yml"), "# created by another process\\nservices: {}\\n");
   exit(state.failPull || (state.failTelegramPull && args[1].includes("telegram")) ? 1 : 0);
+} else if (args[0] === "image" && args.includes('{{ index .Config.Labels "io.video-site-91.media-variant" }}')) { output(process.env.TEST_MEDIA_VARIANT ?? "standard"); exit();
 } else if (args[0] === "image") { output(state.pulled || state.localImageChanged ? process.env.TEST_NEW_IMAGE : process.env.TEST_OLD_IMAGE); exit();
 } else if (args[0] === "create") { output("template-container"); exit();
 } else if (args[0] === "cp") {
@@ -130,7 +132,7 @@ function fixture(t: TestContext) {
   mkdirSync(join(root, "templates"));
   const target = join(root, "docker-compose.yml");
   copyFileSync(join(repository, "docker-compose.yml"), target);
-  for (const name of ["docker-compose.yml", "docker-compose.gpu-nvidia.yml", "docker-compose.gpu-vaapi.yml", "tg-docker-compose.yml"]) {
+  for (const name of ["docker-compose.yml", "docker-compose.gpu-nvidia.yml", "docker-compose.gpu-vaapi.yml", "docker-compose.gpu-rockchip.yml", "tg-docker-compose.yml"]) {
     copyFileSync(join(repository, name), join(root, "templates", name));
   }
   writeFileSync(join(bin, "docker"), dockerProbe, { mode: 0o755 });
@@ -1571,7 +1573,7 @@ test("no detected GPU removes GPU access and preserves unrelated resources", req
   const f = fixture(t);
   const base = parse(readFileSync(f.target, "utf8"));
   Object.assign(base.services[service], {
-    runtime: "nvidia", devices: ["/dev/dri:/dev/dri", "/dev/fuse:/dev/fuse"],
+    runtime: "nvidia", devices: ["/dev/dri:/dev/dri", "/dev/mpp_service:/dev/mpp_service", "/dev/rga:/dev/rga", "/dev/dma_heap:/dev/dma_heap", "/dev/fuse:/dev/fuse"],
     environment: { CUSTOM: "keep", NVIDIA_DRIVER_CAPABILITIES: "all" },
     deploy: { resources: { limits: { memory: "2G" }, reservations: { devices: [
       { driver: "nvidia", capabilities: ["gpu"] }, { driver: "custom", capabilities: ["custom"] },
@@ -1590,6 +1592,7 @@ test("no detected GPU removes GPU access and preserves unrelated resources", req
 });
 
 const probeHost = `
+rockchip_devices() { printf '%s\\n' "\${TEST_ROCKCHIP_DEVICES:-}"; }
 list_render_devices() { printf '%s\\n' "\${TEST_RENDER_DEVICES:-\${TEST_RENDER_DEVICE:-}}"; }
 render_vendor() { printf '%s\\n' "\${TEST_RENDER_VENDOR:-0x8086}"; }
 render_device_name() { printf 'Intel GPU\\n'; }
@@ -1690,4 +1693,128 @@ main update`;
   assert.equal(after.environment.NVIDIA_VISIBLE_DEVICES, "GPU-existing");
   assert.equal(after.environment.NVIDIA_DRIVER_CAPABILITIES, "utility");
   assert.equal(after.deploy, undefined);
+});
+
+function rockchipDeployment(t: TestContext) {
+  const f = fixture(t);
+  const config = parse(readFileSync(f.target, "utf8"));
+  config.services[service].image = "ghcr.io/nianzhibai/91:stable-rockchip";
+  config.services[service].devices = ["/dev/fuse:/dev/fuse"];
+  writeFileSync(f.target, JSON.stringify(config));
+  return f;
+}
+
+test("Rockchip selection maps its device set and keeps the image and app setting", requiresCompose, (t) => {
+  const f = rockchipDeployment(t);
+  mkdirSync(join(f.root, "data"));
+  const config = join(f.root, "data/config.yaml");
+  writeFileSync(config, "generation: {use_gpu: false}\n");
+  succeeded(f.run(["gpu"], { TEST_READY_GPU: "rockchip", TEST_MEDIA_VARIANT: "rockchip" }));
+  const after = f.raw().services[service];
+  assert.equal(after.image, "ghcr.io/nianzhibai/91:stable-rockchip");
+  assert.deepEqual(after.devices.map((device: any) => device.source), ["/dev/fuse", ...defaultGPUs.rockchip.devices!]);
+  assert.equal(after.privileged, undefined);
+  assert.equal(readFileSync(config, "utf8"), "generation: {use_gpu: false}\n");
+  assert.equal(f.state().starts[0].services[service].image, oldImage);
+  assert.equal(f.state().pulled, false);
+  const original = readFileSync(f.target, "utf8");
+  succeeded(f.run(["gpu"], { TEST_READY_GPU: "rockchip", TEST_MEDIA_VARIANT: "rockchip" }));
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(f.state().starts.length, 1);
+});
+
+test("Rockchip accepts a legacy service node without adding absent optional devices", requiresCompose, (t) => {
+  const f = rockchipDeployment(t);
+  const choice = { ...defaultGPUs.rockchip, device: "/dev/mpp-service", devices: ["/dev/mpp-service", "/dev/dri"] };
+  succeeded(f.run(["gpu"], { TEST_GPU_CHOICES: JSON.stringify([choice]), TEST_MEDIA_VARIANT: "rockchip" }));
+  assert.deepEqual(f.raw().services[service].devices.map((device: any) => device.source), ["/dev/fuse", ...choice.devices]);
+});
+
+test("Rockchip selection rejects a standard image before changing the deployment", requiresCompose, (t) => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  const result = f.run(["gpu"], { TEST_READY_GPU: "rockchip" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /update --image stable-rockchip/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.deepEqual(f.backups(), []);
+  assert.deepEqual(f.state().starts, []);
+});
+
+test("Rockchip updates preserve the variant and mappings without probing hardware", requiresCompose, (t) => {
+  const f = rockchipDeployment(t);
+  succeeded(f.run(["gpu"], { TEST_READY_GPU: "rockchip", TEST_MEDIA_VARIANT: "rockchip" }));
+  const before = f.raw().services[service];
+  succeeded(f.functions('detect_host_gpu() { exit 92; }; main update', { TEST_MEDIA_VARIANT: "rockchip" }));
+  const after = f.raw().services[service];
+  assert.equal(after.image, before.image);
+  assert.deepEqual(after.devices, before.devices);
+  assert.ok(f.state().calls.some((args) => args[0] === "pull" && args[1] === before.image));
+});
+
+test("an image update cannot leave Rockchip devices attached to a standard image", requiresCompose, (t) => {
+  const f = rockchipDeployment(t);
+  succeeded(f.run(["gpu"], { TEST_READY_GPU: "rockchip", TEST_MEDIA_VARIANT: "rockchip" }));
+  const original = readFileSync(f.target, "utf8");
+  const starts = f.state().starts.length;
+  const result = f.run(["update", "--image", "stable"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Rockchip devices require a Rockchip image/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(f.state().starts.length, starts);
+});
+
+test("switching from Rockchip to VAAPI removes MPP and RGA mappings", requiresCompose, (t) => {
+  const f = rockchipDeployment(t);
+  succeeded(f.run(["gpu"], { TEST_READY_GPU: "rockchip", TEST_MEDIA_VARIANT: "rockchip" }));
+  succeeded(f.run(["gpu"], { TEST_READY_GPU: "vaapi" }));
+  assert.deepEqual(f.raw().services[service].devices.map((device: any) => device.source), ["/dev/fuse", vaapiDevice]);
+});
+
+test("failed Rockchip startup rolls back the image and device mappings", requiresCompose, (t) => {
+  const f = rockchipDeployment(t);
+  const original = readFileSync(f.target, "utf8");
+  f.changeState({ failStart: true });
+  const result = f.run(["gpu"], { TEST_READY_GPU: "rockchip", TEST_MEDIA_VARIANT: "rockchip" });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.equal(f.state().starts.length, 2);
+  assert.equal(f.state().starts[1].services[service].image, oldImage);
+});
+
+test("an overlay cannot add devices to a selected Rockchip configuration", requiresCompose, (t) => {
+  const f = rockchipDeployment(t);
+  const overlay = join(f.root, "extra-media.yml");
+  writeFileSync(overlay, JSON.stringify({ services: { [service]: { devices: ["/dev/dma_heap/extra:/dev/dma_heap/extra"] } } }));
+  writeFileSync(join(f.root, ".env"), `COMPOSE_FILE=${f.target}:${overlay}\n`);
+  const original = readFileSync(f.target, "utf8");
+  const result = f.run(["gpu"], { TEST_READY_GPU: "rockchip", TEST_MEDIA_VARIANT: "rockchip" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Compose settings override the selected GPU/);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.deepEqual(f.state().starts, []);
+});
+
+test("Rockchip image aliases work for first installation and explicit updates", requiresCompose, (t) => {
+  const f = freshDeployment(t);
+  succeeded(f.run(["install", "--image", "stable-rockchip"]));
+  assert.equal(f.raw().services[service].image, "ghcr.io/nianzhibai/91:stable-rockchip");
+  succeeded(f.run(["update", "--image", "main-rockchip"]));
+  assert.equal(f.raw().services[service].image, "ghcr.io/nianzhibai/91:main-rockchip");
+});
+
+test("host detection recognizes Rockchip independently from PCI GPUs", requiresCompose, (t) => {
+  const f = fixture(t);
+  const result = f.functions(probeHost, { TEST_ROCKCHIP_DEVICES: defaultGPUs.rockchip.devices!.join("\n") });
+  succeeded(result);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), [defaultGPUs.rockchip]);
+});
+
+test("rootless detection reports inaccessible Rockchip media devices", requiresCompose, (t) => {
+  const f = fixture(t);
+  f.changeState({ info: { Runtimes: {}, OperatingSystem: "Debian", SecurityOptions: ["name=rootless"] } });
+  const result = f.functions(probeHost, { TEST_ROCKCHIP_DEVICES: "/missing-mpp-device" });
+  succeeded(result);
+  assert.match(result.stdout, /check Rockchip media device permissions/);
+  assert.match(result.stdout, /\[\]\s*$/);
 });

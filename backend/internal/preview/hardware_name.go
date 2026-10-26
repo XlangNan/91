@@ -33,9 +33,24 @@ func (h *Hardware) deviceName(ctx context.Context, backend *hardwareBackend) str
 		return "NVIDIA GPU"
 	case "vaapi":
 		return drmDeviceName(ctx, filepath.Join("/sys/class/drm", filepath.Base(backend.device), "device"))
+	case "rkmpp":
+		return rockchipDeviceName("/proc/device-tree")
 	default:
 		return "GPU"
 	}
+}
+
+var rockchipSoCPattern = regexp.MustCompile(`(?i)\b(RK[0-9]{4}[A-Z]?|RV[0-9]{4})\b`)
+
+func rockchipDeviceName(deviceTreeDir string) string {
+	// Board models often omit the SoC; compatible contains e.g. rockchip,rk3588.
+	for _, file := range []string{"compatible", "model"} {
+		data, _ := os.ReadFile(filepath.Join(deviceTreeDir, file))
+		if soc := rockchipSoCPattern.Find(data); len(soc) > 0 {
+			return "Rockchip " + strings.ToUpper(string(soc))
+		}
+	}
+	return "Rockchip VPU"
 }
 
 func cudaDeviceName(output, device string) string {

@@ -61,7 +61,7 @@ test("GPU switch verifies hardware before editing the draft and ignores an older
     enabled: false, checked: true, available: false, reason: "缺少 GPU 设备", fallbackCount: 0,
   })));
   assert.deepEqual(changes, []);
-  assert.deepEqual(errors, ["未检测到 GPU"]);
+  assert.deepEqual(errors, ["未检测到可用的加速硬件"]);
   assert.equal(toggle().getAttribute("aria-checked"), "false");
   assert.equal(toggle().disabled, false);
   assert.equal(detail().textContent, "");
@@ -83,7 +83,7 @@ test("GPU switch verifies hardware before editing the draft and ignores an older
   })));
   assert.equal(renderer!.container.querySelectorAll('[role="alert"]').length, 0);
   assert.deepEqual(detail().textContent, "RTX 4060");
-  assert.deepEqual(errors, ["未检测到 GPU"]);
+  assert.deepEqual(errors, ["未检测到可用的加速硬件"]);
   await act(async () => renderer!.rerender(createElement(GPUAccelerationSettings, props)));
   assert.equal(detail().textContent, "");
   assert.equal(detail().getAttribute("title"), null);
@@ -110,13 +110,13 @@ test("GPU switch verifies hardware before editing the draft and ignores an older
   assert.equal(detail().textContent, "");
   await act(async () => fireEvent.click(toggle()));
   await act(async () => requests[4].reject(new Error("GPU 检测服务不可用")));
-  assert.deepEqual(errors, ["未检测到 GPU", "GPU 检测服务不可用"]);
+  assert.deepEqual(errors, ["未检测到可用的加速硬件", "GPU 检测服务不可用"]);
   assert.equal(toggle().getAttribute("aria-checked"), "false");
   assert.equal(toggle().disabled, false);
   assert.equal(renderer!.container.querySelectorAll('[role="alert"]').length, 0);
   await act(async () => refresh());
   await act(async () => requests[5].reject(new Error("读取 GPU 状态失败")));
-  assert.deepEqual(errors, ["未检测到 GPU", "GPU 检测服务不可用"]);
+  assert.deepEqual(errors, ["未检测到可用的加速硬件", "GPU 检测服务不可用"]);
   await act(async () => renderer!.unmount());
   assert.equal(requests[0].signal.aborted, true);
 });
@@ -134,6 +134,8 @@ test("GPU header restores compact model names from cached status", async (t) => 
     ["NVIDIA RTX A4000", "RTX A4000"],
     ["NVIDIA GPU", "NVIDIA GPU"],
     ["Intel GPU", "Intel GPU"],
+    ["Rockchip RK3588", "RK3588"],
+    ["Rockchip VPU", "Rockchip VPU"],
     [undefined, undefined],
   ]) {
     name = full;

@@ -19,6 +19,7 @@ const image = "ghcr.io/example/video-site";
 const digests = {
   amd64: `sha256:${"a".repeat(64)}`,
   arm64: `sha256:${"b".repeat(64)}`,
+  "rockchip-arm64": `sha256:${"c".repeat(64)}`,
 };
 
 function publication(t: TestContext) {
@@ -28,7 +29,10 @@ function publication(t: TestContext) {
   const argsFile = join(directory, "docker-args");
   mkdirSync(bin);
   // Capture the actual command arguments without accessing a registry.
-  writeFileSync(join(bin, "docker"), '#!/bin/sh\nprintf \'%s\\0\' "$@" > "$DOCKER_ARGS_FILE"\n', { mode: 0o755 });
+  writeFileSync(join(bin, "docker"), `#!/bin/sh
+printf '%s\\0' "$@" >> "$DOCKER_ARGS_FILE"
+printf '\\n' >> "$DOCKER_ARGS_FILE"
+`, { mode: 0o755 });
 
   function digestPath(arch: string) {
     return join(directory, "digests", `docker-digests-${arch}`, "digest.txt");
@@ -54,10 +58,10 @@ function publication(t: TestContext) {
         },
       });
       assert.ifError(result.error);
-      const args = existsSync(argsFile)
-        ? readFileSync(argsFile, "utf8").split("\0").slice(0, -1)
-        : null;
-      return { ...result, args };
+      const calls = existsSync(argsFile)
+        ? readFileSync(argsFile, "utf8").trimEnd().split("\n").map((line) => line.split("\0").slice(0, -1))
+        : [];
+      return { ...result, args: calls[0] ?? null, calls };
     },
   };
 }
@@ -74,9 +78,14 @@ test("manifest publication combines both architectures under every requested tag
     `${image}@${digests.amd64}`,
     `${image}@${digests.arm64}`,
   ]);
+  assert.deepEqual(result.calls[1], [
+    "buildx", "imagetools", "create",
+    ...tags.flatMap((tag) => ["--tag", `${image}:${tag}-rockchip`]),
+    `${image}@${digests["rockchip-arm64"]}`,
+  ]);
 });
 
-for (const arch of ["amd64", "arm64"]) {
+for (const arch of ["amd64", "arm64", "rockchip-arm64"]) {
   test(`manifest publication rejects a missing ${arch} image before updating tags`, (t) => {
     const fixture = publication(t);
     rmSync(fixture.digestPath(arch));
@@ -104,4 +113,14 @@ test("manifest publication requires at least one image tag", (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /No image tags to publish/);
   assert.equal(result.args, null);
+});
+
+test("Docker builds isolate the Rockchip ARM64 runtime from standard images", () => {
+  const builds = workflow.jobs.build.strategy.matrix.include;
+  assert.deepEqual(builds.map(({ id, arch, target }: { id: string; arch: string; target: string }) =>
+    [id, arch, target]), [
+    ["amd64", "amd64", "runtime"],
+    ["arm64", "arm64", "runtime"],
+    ["rockchip-arm64", "arm64", "rockchip"],
+  ]);
 });

@@ -38,7 +38,7 @@ nightly:
 
 # 媒体生成：热更新；各类并发数独立，所有来源共享，范围 1–5
 generation:
-  # 使用 GPU 加速封面和预览生成；自动检测 VAAPI / NVIDIA，不支持的视频回退 CPU
+  # 硬件加速封面和预览生成；自动检测 VAAPI / NVIDIA / Rockchip MPP+RGA，不支持的视频回退 CPU
   use_gpu: false
   thumbnail_concurrency: 1
   preview_concurrency: 1

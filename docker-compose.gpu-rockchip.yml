@@ -1,0 +1,12 @@
+# Rockchip ARM64 with the vendor MPP/RGA kernel drivers.
+# docker compose -f docker-compose.yml -f docker-compose.gpu-rockchip.yml up -d
+# Adjust device paths for the host; 91-docker.sh gpu maps only existing nodes.
+# Then enable hardware acceleration in the administration panel.
+services:
+  video-site-91:
+    image: ghcr.io/nianzhibai/91:stable-rockchip
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/dma_heap:/dev/dma_heap
+      - /dev/mpp_service:/dev/mpp_service
+      - /dev/rga:/dev/rga

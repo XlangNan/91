@@ -76,7 +76,7 @@ test("Docker frontend inputs can load the complete Vite build configuration", as
   const directory = mkdtempSync(join(tmpdir(), "91-docker-frontend-inputs-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");
-  const frontend = dockerfile.split(/^FROM\s+/m)[1];
+  const frontend = dockerfile.split(/^FROM\s+/m).find((stage) => /^[^\n]+\s+AS\s+frontend\s*$/im.test(stage));
   assert.ok(frontend, "Dockerfile contains a frontend build stage");
 
   // Materialize the same local inputs as the frontend stage. Resolving the
