@@ -54,12 +54,13 @@ test("container and release builds use supported Node and run checks", () => {
   assert.equal(packageJson.engines?.node, `^${nodeVersion}`);
   assert.match(packageJson.packageManager ?? "", /^npm@\d+\.\d+\.\d+$/);
   assert.equal(packageJson.engines?.npm, `^${packageJson.packageManager!.slice(4)}`);
-  assert.ok(dockerfile.includes(`FROM node:${nodeVersion}-slim AS frontend\n`));
+  const frontendStage = dockerfile.match(/^FROM(?:\s+--platform=\S+)?\s+(\S+)\s+AS\s+frontend\s*$/im);
+  assert.equal(frontendStage?.[1], `node:${nodeVersion}-slim`, "Frontend image must use the pinned Node version");
   assert.match(dockerfile, /^COPY package\.json package-lock\.json \.npmrc \.\/$/m);
   assert.match(dockerWorkflow, /node-version-file: \.nvmrc/);
   assert.match(releaseWorkflow, /node-version-file: \.nvmrc/);
   const jobs = parse(dockerWorkflow).jobs;
   assert.ok(jobs.prepare.steps.some((step: { run?: string }) => step.run === "npm run check"));
   assert.equal(jobs.build.needs, "prepare", "Image builds must wait for frontend checks");
-  assert.deepEqual(jobs.publish.needs, ["prepare", "build"], "Publishing must wait for both architectures");
+  assert.deepEqual(jobs.publish.needs, ["prepare", "build"], "Publishing must wait for all image builds");
 });
