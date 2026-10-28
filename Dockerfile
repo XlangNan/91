@@ -1,6 +1,12 @@
+# 国内构建默认值：基础镜像走 DaoCloud 公共镜像，apt 走中科大，npm 走 npmmirror。
+# 需要官方源时：--build-arg DOCKER_MIRROR= --build-arg APT_MIRROR=deb.debian.org --build-arg NPM_REGISTRY=https://registry.npmjs.org
+ARG DOCKER_MIRROR=docker.m.daocloud.io/library/
+ARG APT_MIRROR=mirrors.ustc.edu.cn
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
 # Fixed upstream ARM64 binaries include MPP/RGA and libx264. Download on the
 # builder architecture; only the rockchip target depends on this stage.
-FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS rockchip-media
+FROM --platform=$BUILDPLATFORM ${DOCKER_MIRROR}debian:bookworm-slim AS rockchip-media
 ARG TARGETARCH
 RUN test "$TARGETARCH" = arm64 \
     && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -15,12 +21,14 @@ RUN curl -fL --retry 3 https://github.com/MarcA711/Rockchip-FFmpeg-Builds/releas
     && chmod 755 ffmpeg ffprobe
 
 # ---- Build frontend ----
-FROM --platform=$BUILDPLATFORM node:24.22.1-slim AS frontend
+FROM --platform=$BUILDPLATFORM ${DOCKER_MIRROR}node:24.22.1-slim AS frontend
+ARG NPM_REGISTRY
 
 WORKDIR /app
 
 COPY package.json package-lock.json .npmrc ./
-RUN npm install --global "$(node -p "require('./package.json').packageManager")" \
+RUN npm config set registry "$NPM_REGISTRY" \
+    && npm install --global "$(node -p "require('./package.json').packageManager")" \
     && npm ci
 
 COPY tsconfig.json vite.config.ts index.html ./
@@ -30,7 +38,7 @@ COPY src/ src/
 RUN npm run build
 
 # ---- Build backend ----
-FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS backend
+FROM --platform=$BUILDPLATFORM ${DOCKER_MIRROR}golang:1.27.3-bookworm AS backend
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -44,7 +52,8 @@ COPY backend/config_template.go backend/config.example.yaml ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 # ---- Shared application runtime ----
-FROM debian:bookworm-slim AS application
+FROM ${DOCKER_MIRROR}debian:bookworm-slim AS application
+ARG APT_MIRROR
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -83,7 +92,7 @@ ARG VERSION=dev
 
 ENV VIDEO_CONFIG=/opt/video-site-91/data/config.yaml \
     VIDEO_FRONTEND_DIR=/opt/video-site-91/dist \
-    VIDEO_GITHUB_REPO=nianzhibai/91 \
+    VIDEO_GITHUB_REPO=XlangNan/91 \
     VIDEO_IMAGE_VERSION=${VERSION} \
     VIDEO_LISTEN_PORT=9191 \
     VIDEO_VERSION_FILE=/opt/video-site-91/data/.version

@@ -94,40 +94,8 @@ const credentialsSource = readFileSync(
   new URL("../src/admin/drive/credentials.ts", import.meta.url),
   "utf8"
 );
-const p123QRCodeLoginSource = readFileSync(
-  new URL("../src/admin/drive/P123QRCodeLogin.tsx", import.meta.url),
-  "utf8"
-);
-const p115QRCodeLoginSource = readFileSync(
-  new URL("../src/admin/drive/P115QRCodeLogin.tsx", import.meta.url),
-  "utf8"
-);
-const quarkQRCodeLoginSource = readFileSync(
-  new URL("../src/admin/drive/QuarkQRCodeLogin.tsx", import.meta.url),
-  "utf8"
-);
-const qrLoginSources = [
-  quarkQRCodeLoginSource,
-  p115QRCodeLoginSource,
-  p123QRCodeLoginSource,
-  readFileSync(new URL("../src/admin/drive/WopanQRCodeLogin.tsx", import.meta.url), "utf8"),
-  readFileSync(new URL("../src/admin/drive/GuangYaPanQRCodeLogin.tsx", import.meta.url), "utf8"),
-]
-  .join("\n");
-
 const combinedSource = drivesPageSource + "\n" + driveFormSource + "\n" + constantsSource + "\n" + credentialsSource + "\n" + crawlerUploadTargetSource;
-const driveIconKinds = [
-  "p115",
-  "p123",
-  "pikpak",
-  "guangyapan",
-  "onedrive",
-  "googledrive",
-  "quark",
-  "webdav",
-  "wopan",
-  "yun139",
-];
+const driveIconKinds = ["localstorage"];
 const generatedDriveIcons = [{ kind: "localstorage", ext: "png" }];
 
 function driveTypeOptions() {
@@ -185,13 +153,12 @@ test("crawler upload target select uses an aligned custom arrow", () => {
 test("drive form labels the optional root directory and hides it for localstorage", () => {
   assert.match(driveFormSource, /<label[^>]*>\{rootDirectoryLabel\(form\.kind\)\}<\/label>/);
   assert.match(driveFormSource, /placeholder=\{rootIdPlaceholder\(form\.kind\)\}/);
-  assert.match(constantsSource, /kind === "webdav" \? "WebDAV根目录\(可选\)" : "自定义网盘根目录\(可选\)"/);
-  assert.match(constantsSource, /if \(kind === "webdav"\) return "可填写目录路径，留空表示根目录"/);
-  assert.match(constantsSource, /return "可填写目录ID，留空表示根目录"/);
+  assert.match(constantsSource, /function rootDirectoryLabel\(_kind: Kind\): string/);
+  assert.match(constantsSource, /function rootIdPlaceholder\(_kind: Kind\): string/);
   assert.doesNotMatch(combinedSource, />根目录 ID</);
   assert.match(
     combinedSource,
-    /usesRootDirectoryID\(kind:\s*Kind\):\s*boolean\s*\{\s*return kind !== "localstorage";\s*\}/
+    /usesRootDirectoryID\(_kind:\s*Kind\):\s*boolean\s*\{\s*return false;\s*\}/
   );
   assert.match(combinedSource, /\{usesRootDirectoryID\(form\.kind\) && \(/);
   assert.match(combinedSource, /\{usesRootDirectoryID\(d\.kind\) && \(/);
@@ -202,116 +169,6 @@ test("drive form labels the optional root directory and hides it for localstorag
   );
   assert.doesNotMatch(combinedSource, /扫描起点目录 ID/);
   assert.doesNotMatch(combinedSource, /set\("scanRootId"/);
-});
-
-test("onedrive drive form supports default and custom OAuth applications", () => {
-  const match =
-    /case "onedrive":\s*return \[([\s\S]*?)\];\s*case "googledrive":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "onedrive credential field block should be present");
-  const fields = match[1];
-
-  assert.match(fields, /key: "auth_mode"/);
-  assert.match(fields, /label: "认证方式"/);
-  assert.match(fields, /defaultValue: ONEDRIVE_AUTH_MODE_OPENLIST_API/);
-  assert.match(fields, /label: "OpenList API"/);
-  assert.match(fields, /label: "自建应用"/);
-  assert.match(fields, /key: "client_id"/);
-  assert.match(fields, /label: "客户端 ID"/);
-  assert.match(fields, /key: "client_secret"/);
-  assert.match(fields, /label: "客户端密钥"/);
-  assert.match(fields, /visibleWhen:[\s\S]*?ONEDRIVE_AUTH_MODE_CUSTOM_APP/);
-  assert.match(fields, /请填写客户端密钥值，不是密钥 ID/);
-  assert.match(fields, /key: "refresh_token"/);
-  assert.match(fields, /与所用应用匹配的 OneDrive refresh_token/);
-  assert.doesNotMatch(fields, /key: "access_token"/);
-  assert.doesNotMatch(fields, /key: "api_url_address"/);
-  assert.doesNotMatch(fields, /key: "region"/);
-  assert.doesNotMatch(fields, /key: "is_sharepoint"/);
-  assert.doesNotMatch(fields, /key: "site_id"/);
-  assert.match(driveFormSource, /const visibleFields = fields\.filter/);
-  assert.match(driveFormSource, /\{visibleFields\.map\(\(f\) => \(/);
-  assert.match(
-    driveFormSource,
-    /v === ONEDRIVE_AUTH_MODE_OPENLIST_API[\s\S]*?creds\.client_id = "";[\s\S]*?creds\.client_secret = "";/
-  );
-  assert.match(drivesPageSource, /driveCredentialsForForm\(/);
-});
-
-test("googledrive drive form only supports a custom OAuth client", () => {
-  assertDriveTypeOption("googledrive", "Google Drive");
-
-  const match =
-    /case "googledrive":\s*return \[([\s\S]*?)\];\s*case "webdav":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "googledrive credential field block should be present");
-  const fields = match[1];
-
-  assert.match(fields, /key: "refresh_token"/);
-  assert.match(fields, /key: "client_id"/);
-  assert.match(fields, /key: "client_secret"/);
-  assert.doesNotMatch(fields, /key: "use_online_api"/);
-  assert.doesNotMatch(fields, /OpenList 在线 API|api\.oplist\.org/);
-  assert.doesNotMatch(fields, /key: "api_url_address"/);
-  assert.doesNotMatch(constantsSource, /请参考OpenList文档中关于谷歌云盘的配置方法。/);
-  assert.match(driveFormSource, /<select/);
-  assert.match(driveFormSource, /value=\{form\.creds\[f\.key\] \?\? f\.defaultValue \?\? ""\}/);
-  assert.match(driveFormSource, /className="admin-form-select"/);
-  assert.match(driveFormSource, /ChevronDown/);
-  assert.doesNotMatch(drivesPageSource, /googleDriveUseOnlineAPI|googleDriveOpenListApiUrl/);
-  assert.doesNotMatch(apiSource, /googleDriveUseOnlineAPI|googleDriveOpenListApiUrl/);
-  assert.doesNotMatch(fields, /key: "access_token"/);
-});
-
-test("webdav drive form asks for a standard endpoint and basic auth credentials", () => {
-  assertDriveTypeOption("webdav", "WebDAV");
-
-  const match =
-    /case "webdav":\s*return \[([\s\S]*?)\];\s*case "localstorage":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "webdav credential field block should be present");
-  const fields = match[1];
-
-  assert.match(fields, /key: "base_url"/);
-  assert.match(fields, /placeholder: "https:\/\/openlist\.example\.com\/dav"/);
-  assert.match(fields, /key: "username"/);
-  assert.match(fields, /key: "password"/);
-  assert.doesNotMatch(fields, /encrypt|crypt|302/i);
-});
-
-test("pikpak drive form presents email login before refresh token fallback", () => {
-  const match =
-    /case "pikpak":\s*return \[([\s\S]*?)\];\s*case "wopan":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "pikpak credential field block should be present");
-  const fields = match[1];
-
-  assert.match(
-    fields,
-    /key: "username"[\s\S]*?label: "邮箱"[\s\S]*?methodLabel: "账号密码登录"[\s\S]*?key: "password"[\s\S]*?key: "refresh_token"[\s\S]*?label: "refresh_token"[\s\S]*?methodLabel: "或使用刷新令牌"/
-  );
-  assert.doesNotMatch(fields, /key: "platform"/);
-  assert.doesNotMatch(fields, /key: "captcha_token"/);
-  assert.doesNotMatch(fields, /key: "device_id"/);
-  assert.doesNotMatch(fields, /key: "disable_media_link"/);
-  assert.doesNotMatch(fields, /推荐/);
-  assert.doesNotMatch(
-    driveFormSource,
-    /优先填写 refresh_token；没有时请同时填写用户名和密码/
-  );
-  assert.match(
-    driveFormSource,
-    /className="admin-form__method-label">\{f\.methodLabel\}<\/div>/
-  );
-  assert.match(
-    drivesPageSource,
-    /driveCredentialError\(form\.kind, form\.creds, !form\.id\)/
-  );
-  assert.match(drivesPageSource, /changedCredentialValues\(/);
 });
 
 test("all existing drive edits submit credential deltas", () => {
@@ -335,169 +192,17 @@ test("busy drive edits are saved and report deferred activation", () => {
   assert.match(drivesPageSource, /已保存，将在当前网盘任务结束后生效/);
 });
 
-test("wopan drive form omits the optional family space field", () => {
-  const match =
-    /case "wopan":\s*return \[([\s\S]*?)\];\s*case "guangyapan":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "wopan credential field block should be present");
-  assert.doesNotMatch(match[1], /key: "family_id"|家庭空间可选/);
-});
-
-test("p115 drive form supports qr login and manual cookie fallback", () => {
-  assertDriveTypeOption("p115", "115 网盘");
-  assert.match(driveFormSource, /P115QRCodeLogin/);
-  assert.match(driveFormSource, /form\.kind === "p115"/);
-  assert.match(p115QRCodeLoginSource, /<span className="admin-form__label">扫码登录<\/span>/);
-  assert.match(p115QRCodeLoginSource, /status\?\.state === "scanned"/);
-  assert.match(p115QRCodeLoginSource, /onCookie\(next\.cookie\)/);
-  assert.match(apiSource, /startP115QRLogin/);
-  assert.match(apiSource, /getP115QRStatus/);
-  assert.match(apiSource, /request<P115QRStatus>\("\/drives\/p115\/qr\/status", \{/);
-  assert.match(apiSource, /body: JSON\.stringify\(\{/);
-
-  const match =
-    /case "p115":\s*return \[([\s\S]*?)\];\s*case "p123":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "p115 credential field block should be present");
-  assert.match(match[1], /key: "cookie"/);
-  assert.match(match[1], /UID=xxx; CID=xxx; SEID=xxx; KID=xxx/);
-  assert.match(match[1], /methodLabel: "或手动填写"/);
-});
-
-test("quark drive form supports qr login and manual cookie fallback", () => {
-  assertDriveTypeOption("quark", "夸克网盘");
-  assert.match(driveFormSource, /QuarkQRCodeLogin/);
-  assert.match(driveFormSource, /form\.kind === "quark"/);
-  assert.match(quarkQRCodeLoginSource, /<span className="admin-form__label">扫码登录<\/span>/);
-  assert.match(quarkQRCodeLoginSource, /onCookie\(next\.cookie\)/);
-  assert.match(quarkQRCodeLoginSource, /getQuarkQRStatus\(activeSession\.token\)/);
-  assert.match(apiSource, /startQuarkQRLogin/);
-  assert.match(apiSource, /getQuarkQRStatus/);
-  assert.match(apiSource, /request<QuarkQRStatus>\("\/drives\/quark\/qr\/status", \{/);
-  assert.match(apiSource, /body: JSON\.stringify\(\{ token \}\)/);
-
-  const match =
-    /case "quark":\s*return \[([\s\S]*?)\];\s*case "p115":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "quark credential field block should be present");
-  assert.match(match[1], /key: "cookie"/);
-  assert.match(match[1], /methodLabel: "或手动填写"/);
-  assert.match(match[1], /__pus=\.\.\.; __puus=\.\.\.; \.\.\./);
-  assert.doesNotMatch(match[1], /use_transcoding_address|客户端 302/);
-});
-
-test("p123 drive form exposes qr login and phone or email password login", () => {
-  assertDriveTypeOption("p123", "123网盘");
-  assert.match(driveFormSource, /P123QRCodeLogin/);
-  assert.match(p123QRCodeLoginSource, /<span className="admin-form__label">扫码登录<\/span>/);
-  assert.match(driveFormSource, /className="admin-form__method-label">\{f\.methodLabel\}<\/div>/);
-  assert.doesNotMatch(p123QRCodeLoginSource, /方式一：扫码登录/);
-  assert.doesNotMatch(driveFormSource, /方式二：手机号密码登录/);
-  assert.match(credentialsSource, /hasScannedToken/);
-  assert.match(credentialsSource, /请扫码登录，或填写手机号\/邮箱和密码/);
-
-  const match =
-    /case "p123":\s*return \[([\s\S]*?)\];\s*case "pikpak":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "p123 credential field block should be present");
-  const fields = match[1];
-
-  assert.match(fields, /key: "username"/);
-  assert.match(fields, /label: "手机号\/邮箱"/);
-  assert.match(fields, /methodLabel: "或使用账号密码"/);
-  assert.match(fields, /key: "password"/);
-  assert.match(fields, /label: "密码"/);
-  assert.doesNotMatch(fields, /key: "access_token"/);
-  assert.doesNotMatch(fields, /access_token（推荐用于风控场景）|可选/);
-  assert.doesNotMatch(p123QRCodeLoginSource, /已填入 access_token/);
-});
-
-test("guangyapan drive form exposes qr login and token fields", () => {
-  assertDriveTypeOption("guangyapan", "光鸭网盘");
-  assert.match(driveFormSource, /GuangYaPanQRCodeLogin/);
-  assert.match(driveFormSource, /form\.kind === "guangyapan"/);
-  assert.match(apiSource, /startGuangYaPanQRLogin/);
-  assert.match(apiSource, /getGuangYaPanQRStatus/);
-
-  const match =
-    /case "guangyapan":\s*return \[([\s\S]*?)\];\s*case "onedrive":/.exec(
-      combinedSource
-    );
-  assert.ok(match, "guangyapan credential field block should be present");
-  const fields = match[1];
-
-  assert.doesNotMatch(fields, /key: "root_path"/);
-  assert.match(fields, /key: "refresh_token"/);
-  assert.match(fields, /key: "access_token"/);
-  assert.doesNotMatch(fields, /key: "phone_number"/);
-  assert.doesNotMatch(fields, /key: "send_code"/);
-  assert.doesNotMatch(fields, /key: "verify_code"/);
-  assert.doesNotMatch(fields, /key: "captcha_token"/);
-  assert.doesNotMatch(fields, /key: "client_id"/);
-  assert.doesNotMatch(fields, /key: "device_id"/);
-  assert.match(combinedSource, /if \(kind === "guangyapan"\) return ""/);
-});
-
 test("localstorage drive form asks for a server directory path", () => {
   assertDriveTypeOption("localstorage", "本地存储");
 
-  const match =
-    /case "localstorage":\s*return \[([\s\S]*?)\];\s*\}\s*\}/.exec(
-      combinedSource
-    );
-  assert.ok(match, "localstorage credential field block should be present");
-  const fields = match[1];
+  const start = constantsSource.indexOf("export function credentialFields");
+  assert.ok(start >= 0, "credential field block should be present");
+  const fields = constantsSource.slice(start);
 
   assert.match(fields, /key: "path"/);
   assert.match(fields, /label: "本地目录路径"/);
-  assert.match(combinedSource, /if \(kind === "localstorage"\) return "\/"/);
-  assert.match(combinedSource, /kind !== "localstorage"/);
+  assert.match(combinedSource, /defaultRootId\(_kind: Kind\): string \{\s*return "\/";/);
   assert.doesNotMatch(combinedSource, /spider91/);
-});
-
-test("drive type selector keeps primary source order", () => {
-  assert.deepEqual(driveTypeOptions(), [
-    { value: "p115", label: "115 网盘" },
-    { value: "p123", label: "123网盘" },
-    { value: "pikpak", label: "PikPak" },
-    { value: "guangyapan", label: "光鸭网盘" },
-    { value: "onedrive", label: "OneDrive" },
-    { value: "googledrive", label: "Google Drive" },
-    { value: "quark", label: "夸克网盘" },
-    { value: "wopan", label: "联通网盘" },
-    { value: "yun139", label: "移动网盘" },
-    { value: "webdav", label: "WebDAV" },
-    { value: "localstorage", label: "本地存储" },
-  ]);
-});
-
-test("drive create form keeps selected type step visually minimal", () => {
-  assert.doesNotMatch(driveFormSource, /302直链|扫码登录|稳定快速|服务器中转模式|本机文件目录/);
-  assert.doesNotMatch(driveFormSource, /留空时使用该网盘类型的默认根目录/);
-  assert.doesNotMatch(driveFormSource, /重选类型|admin-drive-selected-bar__back|onBack/);
-  assert.doesNotMatch(driveFormSource, /凭证配置|credentialHelp|admin-form__help--lead|f\.help/);
-  assert.doesNotMatch(
-    constantsSource,
-    /credentialHelp|help\?:|help:|请参考OpenList文档|填写服务器可访问|扫码成功后会自动填入|Google Cloud Console|路径必须是后端服务器/
-  );
-  assert.doesNotMatch(
-    combinedSource,
-    /使用微信或 123网盘 App 扫码并确认登录|使用联通网盘 App 扫码并确认登录|使用光鸭 App 扫码并确认登录/
-  );
-  assert.doesNotMatch(qrLoginSources, /admin-status|QRStatusClass|statusText|statusClass/);
-  assert.doesNotMatch(drivesPageSource, /onBack=\{\(\) => setNameTouched\(false\)\}/);
-  assert.doesNotMatch(adminCss, /\.admin-drive-selected-bar__back/);
-  assert.doesNotMatch(adminCss, /\.admin-drive-selected-bar__desc/);
-  assert.doesNotMatch(adminCss, /\.admin-drive-type-card__desc/);
-  assert.doesNotMatch(adminCss, /\.admin-form__help--lead/);
-  assert.match(
-    adminCss,
-    /\.admin-p123-qr\s*\{[^}]*padding\s*:\s*0;[^}]*border\s*:\s*0;[^}]*background\s*:\s*transparent/s
-  );
 });
 
 test("drive form required fields use save-time prompts instead of label stars", () => {
@@ -821,8 +526,7 @@ test("drive icons use real assets with abbreviation fallback", () => {
       `${kind} generated icon asset should exist`
     );
   }
-  assert.match(constantsSource, /googledrive:\s*"GD"/);
-  assert.match(constantsSource, /webdav:\s*"WD"/);
+  assert.match(constantsSource, /localstorage:\s*"Lo"/);
   assert.match(constantsSource, /function driveKindAbbr\(kind: string\)/);
   assert.match(constantsSource, /function driveKindIconPath\(kind: string\)/);
   assert.match(constantsSource, /\.slice\(0, 2\)\.toUpperCase\(\)/);
@@ -985,16 +689,6 @@ test("drive dialogs share a bounded layout with a scrollable form body", () => {
   assert.match(drivesPageSource, /title="编辑凭证"[\s\S]*?className="admin-modal--drive-form"/);
   assert.match(adminCss, /\.admin-modal--drive-form\s*\{[^}]*max-height\s*:[^;]+;[^}]*overflow\s*:\s*hidden/s);
   assert.match(adminCss, /\.admin-modal--drive-form \.admin-modal__body\s*\{[^}]*min-height\s*:\s*0;[^}]*overflow-y\s*:\s*auto/s);
-});
-
-test("initial add-drive type picker omits cancel and save footer actions", () => {
-  assert.match(drivesPageSource, /const \[createDriveTypeSelected, setCreateDriveTypeSelected\]/);
-  assert.match(drivesPageSource, /setCreateDriveTypeSelected\(false\);[\s\S]*?setModalOpen\(true\)/);
-  assert.match(
-    drivesPageSource,
-    /footer=\{form\.id \|\| createDriveTypeSelected \? \([\s\S]*?取消[\s\S]*?保存[\s\S]*?\) : undefined\}/
-  );
-  assert.match(driveFormSource, /onTypeSelected\?\.\(true\)/);
 });
 
 test("drive credential editor loads stored values on demand", () => {
@@ -1206,30 +900,6 @@ test("drive discard confirmation matches delete confirmation modal styling", () 
     adminCss,
     /\.admin-modal--confirm \.admin-modal__header \.admin-btn,[\s\S]*?\.admin-modal--delete-confirm \.admin-modal__header \.admin-btn\s*\{[^}]*border-color\s*:\s*transparent;[^}]*box-shadow\s*:\s*none/s
   );
-});
-
-test("new drive type selection alone is not treated as unsaved config", () => {
-  assert.match(
-    drivesPageSource,
-    /const formDirty = form\.id\s*\?\s*!sameForm\(form, initialForm\)\s*:\s*hasCreateFormChanges\(form\);/
-  );
-  assert.match(drivesPageSource, /function handleCreateFormChange\(nextForm: FormState\)/);
-  assert.match(
-    drivesPageSource,
-    /if \(!nextForm\.id && !hasCreateFormChanges\(nextForm\)\) \{\s*setInitialForm\(nextForm\);/
-  );
-  assert.match(drivesPageSource, /onChange=\{handleCreateFormChange\}/);
-
-  const match = /function hasCreateFormChanges\(form: FormState\): boolean \{([\s\S]*?)\n\}/.exec(
-    drivesPageSource
-  );
-  assert.ok(match, "create form dirty helper should be present");
-  const helper = match[1];
-
-  assert.match(helper, /form\.name\.trim\(\) !== ""/);
-  assert.match(helper, /form\.rootId\.trim\(\) !== ""/);
-  assert.match(helper, /Object\.values\(form\.creds\)\.some/);
-  assert.doesNotMatch(helper, /form\.kind/);
 });
 
 test("drive generation actions keep fixed labels and remain clickable", () => {

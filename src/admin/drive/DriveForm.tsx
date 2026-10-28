@@ -1,11 +1,5 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { QuarkQRCodeLogin } from "./QuarkQRCodeLogin";
-import { P115QRCodeLogin } from "./P115QRCodeLogin";
-import { P123QRCodeLogin } from "./P123QRCodeLogin";
-import { WopanQRCodeLogin } from "./WopanQRCodeLogin";
-import { Yun139QRCodeLogin } from "./Yun139QRCodeLogin";
-import { GuangYaPanQRCodeLogin } from "./GuangYaPanQRCodeLogin";
 import {
   FormState,
   Kind,
@@ -15,7 +9,6 @@ import {
   rootIdPlaceholder,
   usesRootDirectoryID,
 } from "./constants";
-import { ONEDRIVE_AUTH_MODE_OPENLIST_API } from "./onedriveAuth";
 
 type DriveOption = {
   kind: Kind;
@@ -24,16 +17,6 @@ type DriveOption = {
 };
 
 const DRIVE_OPTIONS: DriveOption[] = [
-  { kind: "p115", label: "115 网盘", abbr: "115" },
-  { kind: "p123", label: "123网盘", abbr: "123" },
-  { kind: "pikpak", label: "PikPak", abbr: "Pk" },
-  { kind: "guangyapan", label: "光鸭网盘", abbr: "GY" },
-  { kind: "onedrive", label: "OneDrive", abbr: "OD" },
-  { kind: "googledrive", label: "Google Drive", abbr: "GD" },
-  { kind: "quark", label: "夸克网盘", abbr: "Qk" },
-  { kind: "wopan", label: "联通网盘", abbr: "Wo" },
-  { kind: "yun139", label: "移动网盘", abbr: "139" },
-  { kind: "webdav", label: "WebDAV", abbr: "WD" },
   { kind: "localstorage", label: "本地存储", abbr: "Lo" },
 ];
 
@@ -52,7 +35,7 @@ export function DriveForm({
   const nameInputRef = useRef<HTMLInputElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const fields = useMemo(() => credentialFields(form.kind), [form.kind]);
-  const [step, setStep] = useState<"type" | "form">(isEdit ? "form" : "type");
+  const [step, setStep] = useState<"type" | "form">("form");
   const [changingType, setChangingType] = useState(false);
   const nameId = `${idPrefix}-drive-name`;
   const rootId = `${idPrefix}-drive-root`;
@@ -80,14 +63,6 @@ export function DriveForm({
   }
   function setCred(k: string, v: string) {
     const creds = { ...form.creds, [k]: v };
-    if (
-      form.kind === "onedrive" &&
-      k === "auth_mode" &&
-      v === ONEDRIVE_AUTH_MODE_OPENLIST_API
-    ) {
-      creds.client_id = "";
-      creds.client_secret = "";
-    }
     onChange({ ...form, creds });
   }
   function setKind(v: Kind) {
@@ -190,7 +165,7 @@ export function DriveForm({
           <input
             id={nameId}
             ref={nameInputRef}
-            placeholder="为这个网盘设置一个名称"
+            placeholder="为这个存储设置一个名称，例如 群晖影视库"
             value={form.name}
             onChange={(e) => set("name", e.target.value)}
           />
@@ -199,55 +174,6 @@ export function DriveForm({
 
       {fields.length > 0 && (
         <div className="admin-form__section">
-          {form.kind === "quark" && (
-            <QuarkQRCodeLogin onCookie={(cookie) => setCred("cookie", cookie)} />
-          )}
-
-          {form.kind === "p115" && (
-            <P115QRCodeLogin onCookie={(cookie) => setCred("cookie", cookie)} />
-          )}
-
-          {form.kind === "p123" && (
-            <P123QRCodeLogin
-              onToken={(token) => setCred("access_token", token)}
-            />
-          )}
-
-          {form.kind === "wopan" && (
-            <WopanQRCodeLogin
-              onCredentials={(credentials) =>
-                onChange({
-                  ...form,
-                  creds: {
-                    ...form.creds,
-                    access_token: credentials.accessToken,
-                    refresh_token: credentials.refreshToken,
-                    ...(credentials.familyID ? { family_id: credentials.familyID } : {}),
-                  },
-                })
-              }
-            />
-          )}
-
-          {form.kind === "yun139" && (
-            <Yun139QRCodeLogin onAuthorization={(authorization) => setCred("authorization", authorization)} />
-          )}
-
-          {form.kind === "guangyapan" && (
-            <GuangYaPanQRCodeLogin
-              onCredentials={(credentials) =>
-                onChange({
-                  ...form,
-                  creds: {
-                    ...form.creds,
-                    access_token: credentials.accessToken,
-                    refresh_token: credentials.refreshToken,
-                  },
-                })
-              }
-            />
-          )}
-
           {visibleFields.map((f) => (
             <Fragment key={f.key}>
               {f.methodLabel && (

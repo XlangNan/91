@@ -28,36 +28,15 @@ import (
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/googledrive"
-	"github.com/video-site/backend/internal/drives/guangyapan"
-	"github.com/video-site/backend/internal/drives/onedrive"
-	"github.com/video-site/backend/internal/drives/p115"
-	"github.com/video-site/backend/internal/drives/p123"
-	"github.com/video-site/backend/internal/drives/pikpak"
-	"github.com/video-site/backend/internal/drives/quark"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/drives/webdav"
-	"github.com/video-site/backend/internal/drives/wopan"
-	"github.com/video-site/backend/internal/drives/yun139"
 	"github.com/video-site/backend/internal/mediaasset"
 	"github.com/video-site/backend/internal/persistence"
 	"github.com/video-site/backend/internal/videoname"
 )
 
-// uploadTarget 是 migrator 调用目标 drive 的最小接口。任何一种"接收爬虫上传"的
-// 网盘都要实现它；当前 PikPak、115、123、OneDrive、Google Drive、联通网盘、光鸭网盘和 WebDAV 各自通过适配器满足。
-//
-// 这一层抽象把"迁移调用方"和"具体盘的 SDK 协议"解耦：
-//   - PikPak 走 GCID + OSS PutObject（pikpak.UploadResult）
-//   - 115   走 SHA1   + 秒传 / OSS / 分片（p115.UploadResult）
-//   - 123   走 MD5    + 秒传 / S3 预签名分片（p123.UploadResult）
-//   - OneDrive 走 SHA1 + 小文件 PUT / 大文件 upload session
-//   - Google Drive 走 MD5 + resumable upload session
-//   - 联通网盘 走 SDK Upload2C，当前上游不返回内容 hash
-//   - 光鸭网盘 走 OSS 分片上传，当前上游不返回内容 hash
-//   - WebDAV 走标准 MKCOL + PUT，协议不提供稳定内容 hash
-//
-// 各家返回值都被归一成本地的 UploadResult，并在 catalog 改写阶段统一处理。
+// uploadTarget 是 migrator 调用目标 drive 的最小接口。本分支已移除全部网盘驱动，
+// 因此生产环境中没有任何 drive 实现它，爬虫上传迁移处于停用状态；保留接口是为了
+// 让调度、进度和测试替身继续编译。
 type uploadTarget interface {
 	ID() string
 	Kind() string
@@ -117,236 +96,6 @@ type migrationPlan struct {
 	uploadProxyURL string
 }
 
-// pikpakAdapter / p115Adapter / p123Adapter / onedriveAdapter / googledriveAdapter / webdavAdapter / wopanAdapter / guangyapanAdapter 把具体 driver 包装成 uploadTarget。
-//
-// 之所以不让 driver 直接实现 uploadTarget：
-//
-//  1. 各 driver 的 UploadAndReportXxx 返回的是各自包内的 UploadResult 类型，
-//     直接共用同名同签名方法会引入循环依赖；
-//  2. driver 包不应该感知 crawlerupload 这一层业务定义。
-type pikpakAdapter struct {
-	d *pikpak.Driver
-	existingUploadCache
-}
-
-func (a *pikpakAdapter) ID() string     { return a.d.ID() }
-func (a *pikpakAdapter) Kind() string   { return a.d.Kind() }
-func (a *pikpakAdapter) RootID() string { return a.d.RootID() }
-func (a *pikpakAdapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *pikpakAdapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	res, err := a.d.UploadAndReportHash(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: res.FileID, Hash: res.Hash, Size: res.Size}, nil
-}
-func (a *pikpakAdapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
-type p115Adapter struct {
-	d *p115.Driver
-	existingUploadCache
-}
-
-func (a *p115Adapter) ID() string     { return a.d.ID() }
-func (a *p115Adapter) Kind() string   { return a.d.Kind() }
-func (a *p115Adapter) RootID() string { return a.d.RootID() }
-func (a *p115Adapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *p115Adapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	res, err := a.d.UploadAndReportSha1(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: res.FileID, Hash: res.Sha1, Size: res.Size}, nil
-}
-func (a *p115Adapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
-type p123Adapter struct {
-	d *p123.Driver
-	existingUploadCache
-}
-
-func (a *p123Adapter) ID() string     { return a.d.ID() }
-func (a *p123Adapter) Kind() string   { return a.d.Kind() }
-func (a *p123Adapter) RootID() string { return a.d.RootID() }
-func (a *p123Adapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *p123Adapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	res, err := a.d.UploadAndReportHash(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: res.FileID, Hash: res.Hash, Size: res.Size}, nil
-}
-func (a *p123Adapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
-type onedriveAdapter struct {
-	d *onedrive.Driver
-	existingUploadCache
-}
-
-func (a *onedriveAdapter) ID() string     { return a.d.ID() }
-func (a *onedriveAdapter) Kind() string   { return a.d.Kind() }
-func (a *onedriveAdapter) RootID() string { return a.d.RootID() }
-func (a *onedriveAdapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *onedriveAdapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	res, err := a.d.UploadAndReportHash(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: res.FileID, Hash: res.Hash, Size: res.Size}, nil
-}
-func (a *onedriveAdapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
-type googledriveAdapter struct {
-	d *googledrive.Driver
-	existingUploadCache
-}
-
-func (a *googledriveAdapter) ID() string     { return a.d.ID() }
-func (a *googledriveAdapter) Kind() string   { return a.d.Kind() }
-func (a *googledriveAdapter) RootID() string { return a.d.RootID() }
-func (a *googledriveAdapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *googledriveAdapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	res, err := a.d.UploadAndReportHash(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: res.FileID, Hash: res.Hash, Size: res.Size}, nil
-}
-func (a *googledriveAdapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
-type wopanAdapter struct {
-	d *wopan.Driver
-	existingUploadCache
-}
-
-func (a *wopanAdapter) ID() string     { return a.d.ID() }
-func (a *wopanAdapter) Kind() string   { return a.d.Kind() }
-func (a *wopanAdapter) RootID() string { return a.d.RootID() }
-func (a *wopanAdapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *wopanAdapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	fileID, err := a.d.Upload(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: fileID, Size: size}, nil
-}
-func (a *wopanAdapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
-type yun139Adapter struct {
-	d *yun139.Driver
-	existingUploadCache
-}
-
-func (a *yun139Adapter) ID() string     { return a.d.ID() }
-func (a *yun139Adapter) Kind() string   { return a.d.Kind() }
-func (a *yun139Adapter) RootID() string { return a.d.RootID() }
-func (a *yun139Adapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *yun139Adapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	fileID, err := a.d.Upload(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: fileID, Size: size}, nil
-}
-func (a *yun139Adapter) Rename(ctx context.Context, fileID, name string) error {
-	return a.d.Rename(ctx, fileID, name)
-}
-func (a *yun139Adapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-
-type guangyapanAdapter struct {
-	d *guangyapan.Driver
-	existingUploadCache
-}
-
-func (a *guangyapanAdapter) ID() string     { return a.d.ID() }
-func (a *guangyapanAdapter) Kind() string   { return a.d.Kind() }
-func (a *guangyapanAdapter) RootID() string { return a.d.RootID() }
-func (a *guangyapanAdapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *guangyapanAdapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	fileID, err := a.d.Upload(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: fileID, Size: size}, nil
-}
-func (a *guangyapanAdapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
-type webdavAdapter struct {
-	d *webdav.Driver
-	existingUploadCache
-}
-
-func (a *webdavAdapter) ID() string     { return a.d.ID() }
-func (a *webdavAdapter) Kind() string   { return a.d.Kind() }
-func (a *webdavAdapter) RootID() string { return a.d.RootID() }
-func (a *webdavAdapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *webdavAdapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	fileID, err := a.d.Upload(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: fileID, Size: size}, nil
-}
-func (a *webdavAdapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
-type quarkAdapter struct {
-	d *quark.Driver
-	existingUploadCache
-}
-
-func (a *quarkAdapter) ID() string     { return a.d.ID() }
-func (a *quarkAdapter) Kind() string   { return a.d.Kind() }
-func (a *quarkAdapter) RootID() string { return a.d.RootID() }
-func (a *quarkAdapter) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
-	return a.d.EnsureDir(ctx, pathFromRoot)
-}
-func (a *quarkAdapter) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
-	res, err := a.d.UploadAndReportHash(ctx, parentID, name, r, size)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return UploadResult{FileID: res.FileID, Hash: res.Hash, Size: res.Size}, nil
-}
-func (a *quarkAdapter) Rename(ctx context.Context, fileID, newName string) error {
-	return a.d.Rename(ctx, fileID, newName)
-}
-
 type existingUploadCache struct {
 	byParent map[string]map[string]UploadResult
 }
@@ -390,58 +139,10 @@ func uploadDestinationSignature(name string, size int64) string {
 	return name + "\x00" + strconv.FormatInt(size, 10)
 }
 
-func (a *pikpakAdapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-func (a *p115Adapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-func (a *p123Adapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-func (a *onedriveAdapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-func (a *googledriveAdapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-func (a *wopanAdapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-func (a *guangyapanAdapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-func (a *webdavAdapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-func (a *quarkAdapter) FindExisting(ctx context.Context, parentID, name string, size int64) (*UploadResult, error) {
-	return findExistingDriveUpload(ctx, a.d, &a.existingUploadCache, parentID, name, size)
-}
-
 // adaptUploadTarget 把通用 drive 包装成 uploadTarget。
 // 不支持的盘 kind 返回 error。
 func adaptUploadTarget(d drives.Drive) (uploadTarget, error) {
 	switch v := d.(type) {
-	case *pikpak.Driver:
-		return &pikpakAdapter{d: v}, nil
-	case *p115.Driver:
-		return &p115Adapter{d: v}, nil
-	case *p123.Driver:
-		return &p123Adapter{d: v}, nil
-	case *onedrive.Driver:
-		return &onedriveAdapter{d: v}, nil
-	case *googledrive.Driver:
-		return &googledriveAdapter{d: v}, nil
-	case *wopan.Driver:
-		return &wopanAdapter{d: v}, nil
-	case *yun139.Driver:
-		return &yun139Adapter{d: v}, nil
-	case *guangyapan.Driver:
-		return &guangyapanAdapter{d: v}, nil
-	case *webdav.Driver:
-		return &webdavAdapter{d: v}, nil
-	case *quark.Driver:
-		return &quarkAdapter{d: v}, nil
 	case uploadTarget:
 		// 测试或自定义实现可以直接传入；优先使用具体类型分支以拿到适配器。
 		return v, nil

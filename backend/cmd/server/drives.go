@@ -17,20 +17,10 @@ import (
 	"github.com/video-site/backend/internal/crawljob"
 	"github.com/video-site/backend/internal/driveevents"
 	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/googledrive"
-	"github.com/video-site/backend/internal/drives/guangyapan"
 	"github.com/video-site/backend/internal/drives/localstorage"
 	"github.com/video-site/backend/internal/drives/localupload"
-	"github.com/video-site/backend/internal/drives/onedrive"
-	"github.com/video-site/backend/internal/drives/p115"
-	"github.com/video-site/backend/internal/drives/p123"
-	"github.com/video-site/backend/internal/drives/pikpak"
-	"github.com/video-site/backend/internal/drives/quark"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
 	"github.com/video-site/backend/internal/drives/telegramstorage"
-	"github.com/video-site/backend/internal/drives/webdav"
-	"github.com/video-site/backend/internal/drives/wopan"
-	"github.com/video-site/backend/internal/drives/yun139"
 	"github.com/video-site/backend/internal/fingerprint"
 	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/readretry"
@@ -893,17 +883,8 @@ func configureDriveCredentialLease(lease driveCredentialLease, d *catalog.Drive)
 	if lease.state == nil || d == nil {
 		return
 	}
+	// 本地存储与脚本爬虫没有会轮换的远程凭证，因此不需要凭证锚点。
 	anchorKey := ""
-	switch d.Kind {
-	case "quark":
-		anchorKey = "cookie"
-	case p123.Kind:
-		anchorKey = "access_token"
-	case yun139.Kind:
-		anchorKey = "authorization"
-	case "pikpak", "wopan", guangyapan.Kind, "onedrive", googledrive.Kind:
-		anchorKey = "refresh_token"
-	}
 	lease.state.mu.Lock()
 	defer lease.state.mu.Unlock()
 	if lease.generation != lease.state.generation {
@@ -1005,151 +986,6 @@ func (a *App) attachDriveConfigUnlocked(ctx context.Context, d *catalog.Drive, r
 
 	var drv drives.Drive
 	switch d.Kind {
-	case "quark":
-		drv = quark.New(quark.Config{
-			ID:            d.ID,
-			Cookie:        d.Credentials["cookie"],
-			RootID:        d.RootID,
-			UploadTempDir: a.uploadWorkDir("quark"),
-			OnCookieUpdate: func(cookie string) {
-				a.persistDriveCredentials(credentialLease, map[string]string{"cookie": cookie})
-			},
-		})
-	case "p115":
-		drv = p115.New(p115.Config{
-			ID:            d.ID,
-			Cookie:        d.Credentials["cookie"],
-			RootID:        d.RootID,
-			UploadTempDir: a.uploadWorkDir("p115"),
-		})
-	case p123.Kind:
-		drv = p123.New(p123.Config{
-			ID:            d.ID,
-			Username:      d.Credentials["username"],
-			Password:      d.Credentials["password"],
-			AccessToken:   d.Credentials["access_token"],
-			Platform:      d.Credentials["platform"],
-			RootID:        d.RootID,
-			UploadTempDir: a.uploadWorkDir(p123.Kind),
-			OnTokenUpdate: func(access string) {
-				a.persistDriveCredentials(credentialLease, map[string]string{"access_token": access})
-			},
-		})
-	case "pikpak":
-		drv = pikpak.New(pikpak.Config{
-			ID:               d.ID,
-			Username:         d.Credentials["username"],
-			Password:         d.Credentials["password"],
-			Platform:         d.Credentials["platform"],
-			RefreshToken:     d.Credentials["refresh_token"],
-			AccessToken:      d.Credentials["access_token"],
-			CaptchaToken:     d.Credentials["captcha_token"],
-			DeviceID:         d.Credentials["device_id"],
-			RootID:           d.RootID,
-			DisableMediaLink: pikpak.ParseBoolDefault(d.Credentials["disable_media_link"], true),
-			UploadTempDir:    a.uploadWorkDir("pikpak"),
-			OnTokenUpdate: func(access, refresh, captcha, deviceID string) {
-				a.persistDriveCredentials(credentialLease, map[string]string{
-					"access_token":  access,
-					"refresh_token": refresh,
-					"captcha_token": captcha,
-					"device_id":     deviceID,
-				})
-			},
-		})
-	case yun139.Kind:
-		drv = yun139.New(yun139.Config{
-			ID: d.ID, RootID: d.RootID,
-			Authorization: d.Credentials["authorization"],
-			UploadTempDir: a.uploadWorkDir(yun139.Kind),
-			OnAuthorizationUpdate: func(authorization string) {
-				a.persistDriveCredentials(credentialLease, map[string]string{"authorization": authorization})
-			},
-		})
-	case "wopan":
-		drv = wopan.New(wopan.Config{
-			ID:            d.ID,
-			AccessToken:   d.Credentials["access_token"],
-			RefreshToken:  d.Credentials["refresh_token"],
-			FamilyID:      d.Credentials["family_id"],
-			RootID:        d.RootID,
-			UploadTempDir: a.uploadWorkDir("wopan"),
-			OnTokenUpdate: func(access, refresh string) {
-				a.persistDriveCredentials(credentialLease, map[string]string{
-					"access_token":  access,
-					"refresh_token": refresh,
-				})
-			},
-		})
-	case guangyapan.Kind:
-		drv = guangyapan.New(guangyapan.Config{
-			ID:             d.ID,
-			RootID:         d.RootID,
-			RootPath:       guangYaPanLegacyRootPath(d.RootID, d.Credentials),
-			PhoneNumber:    d.Credentials["phone_number"],
-			CaptchaToken:   d.Credentials["captcha_token"],
-			SendCode:       parseBoolDefault(strings.TrimSpace(d.Credentials["send_code"]), false),
-			VerifyCode:     d.Credentials["verify_code"],
-			VerificationID: d.Credentials["verification_id"],
-			AccessToken:    d.Credentials["access_token"],
-			RefreshToken:   d.Credentials["refresh_token"],
-			ClientID:       d.Credentials["client_id"],
-			DeviceID:       d.Credentials["device_id"],
-			PageSize:       parseIntDefault(strings.TrimSpace(d.Credentials["page_size"]), 100),
-			OrderBy:        parseIntDefault(strings.TrimSpace(d.Credentials["order_by"]), 3),
-			SortType:       parseIntDefault(strings.TrimSpace(d.Credentials["sort_type"]), 1),
-			AccountBaseURL: d.Credentials["account_base_url"],
-			APIBaseURL:     d.Credentials["api_base_url"],
-			UploadTempDir:  a.uploadWorkDir(guangyapan.Kind),
-			OnCredentialsUpdate: func(updated map[string]string) {
-				a.persistDriveCredentials(credentialLease, updated)
-			},
-		})
-	case "onedrive":
-		drv = onedrive.New(onedrive.Config{
-			ID:           d.ID,
-			RootID:       d.RootID,
-			Region:       d.Credentials["region"],
-			AccessToken:  d.Credentials["access_token"],
-			RefreshToken: d.Credentials["refresh_token"],
-			AuthMode:     d.Credentials["auth_mode"],
-			ClientID:     d.Credentials["client_id"],
-			ClientSecret: d.Credentials["client_secret"],
-			IsSharePoint: parseBoolDefault(d.Credentials["is_sharepoint"], false),
-			SiteID:       d.Credentials["site_id"],
-			RenewAPIURL:  d.Credentials["api_url_address"],
-			OnTokenUpdate: func(access, refresh string) {
-				a.persistDriveCredentials(credentialLease, map[string]string{
-					"access_token":  access,
-					"refresh_token": refresh,
-				})
-			},
-		})
-	case googledrive.Kind:
-		drv = googledrive.New(googledrive.Config{
-			ID:           d.ID,
-			RootID:       d.RootID,
-			AccessToken:  d.Credentials["access_token"],
-			RefreshToken: d.Credentials["refresh_token"],
-			ClientID:     d.Credentials["client_id"],
-			ClientSecret: d.Credentials["client_secret"],
-			OAuthURL:     d.Credentials["oauth_url"],
-			APIBaseURL:   d.Credentials["api_base_url"],
-			OnTokenUpdate: func(access, refresh string) {
-				a.persistDriveCredentials(credentialLease, map[string]string{
-					"access_token":  access,
-					"refresh_token": refresh,
-				})
-			},
-		})
-	case webdav.Kind:
-		drv = webdav.New(webdav.Config{
-			ID:       d.ID,
-			BaseURL:  d.Credentials["base_url"],
-			Username: d.Credentials["username"],
-			Password: d.Credentials["password"],
-			RootID:   d.RootID,
-		})
 	case localstorage.Kind:
 		drv = localstorage.New(localstorage.Config{
 			ID:                   d.ID,
@@ -1280,10 +1116,6 @@ func generationCooldownForDrive(drv drives.Drive) time.Duration {
 	if drv == nil {
 		return 0
 	}
-	switch strings.ToLower(drv.Kind()) {
-	case "wopan", "guangyapan":
-		return 10 * time.Minute
-	}
 	return 0
 }
 
@@ -1328,12 +1160,6 @@ func fingerprintConfigForDrive(drv drives.Drive) fingerprint.Config {
 	cfg := fingerprint.Config{RateLimitCooldown: 5 * time.Minute}
 	if drv == nil {
 		return cfg
-	}
-	switch strings.ToLower(drv.Kind()) {
-	case "p115", "p123", "onedrive", "wopan", "guangyapan":
-		cfg.RateLimitCooldown = 10 * time.Minute
-	case "pikpak":
-		cfg.RateLimitCooldown = 5 * time.Minute
 	}
 	return cfg
 }

@@ -92,7 +92,7 @@ export function DrivesPage() {
   const [deleteTarget, setDeleteTarget] = useState<api.AdminDrive | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [initialForm, setInitialForm] = useState<FormState>(emptyForm);
-  const [createDriveTypeSelected, setCreateDriveTypeSelected] = useState(false);
+  const [createDriveTypeSelected, setCreateDriveTypeSelected] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editingCredentialsId, setEditingCredentialsId] = useState("");
   const [deletingId, setDeletingId] = useState("");
@@ -133,7 +133,7 @@ export function DrivesPage() {
     const nextForm = { ...emptyForm };
     setForm(nextForm);
     setInitialForm(nextForm);
-    setCreateDriveTypeSelected(false);
+    setCreateDriveTypeSelected(true);
     setModalOpen(true);
   }
 
@@ -219,9 +219,6 @@ export function DrivesPage() {
       ? form.id
       : makeUniqueDriveId(form.kind, name, list);
     const editableCredentialKeys = credentialFields(form.kind).map((field) => field.key);
-    // QR login writes a few values that do not have a standalone input field.
-    if (form.kind === "p123") editableCredentialKeys.push("access_token");
-    if (form.kind === "wopan") editableCredentialKeys.push("family_id");
     const credentials = editing
       ? changedCredentialValues(
           form.creds,

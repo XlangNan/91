@@ -1,47 +1,13 @@
-import googledriveIcon from "./icons/googledrive.png";
-import guangyapanIcon from "./icons/guangyapan.png";
 import localstorageIcon from "./icons/localstorage.png";
-import onedriveIcon from "./icons/onedrive.png";
-import p115Icon from "./icons/p115.png";
-import p123Icon from "./icons/p123.png";
-import pikpakIcon from "./icons/pikpak.png";
-import quarkIcon from "./icons/quark.png";
-import webdavIcon from "./icons/webdav.png";
-import wopanIcon from "./icons/wopan.png";
-import yun139Icon from "./icons/yun139.png";
-import {
-  ONEDRIVE_AUTH_MODE_CUSTOM_APP,
-  ONEDRIVE_AUTH_MODE_OPENLIST_API,
-} from "./onedriveAuth";
 import { scanOutcomeClasses, scanOutcomeLabels } from "./scanResults";
 
-export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "yun139" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+export type Kind = "localstorage";
 
 export const kindAbbr: Record<string, string> = {
-  quark: "Qk",
-  p115: "115",
-  p123: "123",
-  pikpak: "Pk",
-  wopan: "Wo",
-  yun139: "139",
-  guangyapan: "GY",
-  onedrive: "OD",
-  googledrive: "GD",
-  webdav: "WD",
   localstorage: "Lo",
 };
 
 export const kindIconPath: Record<string, string> = {
-  quark: quarkIcon,
-  p115: p115Icon,
-  p123: p123Icon,
-  pikpak: pikpakIcon,
-  wopan: wopanIcon,
-  yun139: yun139Icon,
-  guangyapan: guangyapanIcon,
-  onedrive: onedriveIcon,
-  googledrive: googledriveIcon,
-  webdav: webdavIcon,
   localstorage: localstorageIcon,
 };
 
@@ -60,16 +26,6 @@ export function driveKindIconPath(kind: string): string {
 }
 
 export const kindLabel: Record<string, string> = {
-  quark: "夸克网盘",
-  p115: "115 网盘",
-  p123: "123网盘",
-  pikpak: "PikPak",
-  wopan: "联通网盘",
-  yun139: "移动网盘",
-  guangyapan: "光鸭网盘",
-  onedrive: "OneDrive",
-  googledrive: "Google Drive",
-  webdav: "WebDAV",
   localstorage: "本地存储",
 };
 
@@ -83,7 +39,7 @@ export type FormState = {
 
 export const emptyForm: FormState = {
   id: "",
-  kind: "p115",
+  kind: "localstorage",
   name: "",
   rootId: "",
   creds: {},
@@ -93,7 +49,7 @@ export function scanAllButtonText(status: { running: boolean; queued: boolean },
   if (triggering) return "触发中...";
   if (status.running) return "扫描运行中";
   if (status.queued) return "扫描已排队";
-  return "扫描所有网盘";
+  return "扫描所有存储";
 }
 
 export function maintenanceBusyText(status: { running: boolean; queued: boolean }) {
@@ -157,28 +113,20 @@ export function formatClock(value: string): string {
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
-export function defaultRootId(kind: Kind): string {
-  if (kind === "yun139") return "/";
-  if (kind === "pikpak") return "";
-  if (kind === "guangyapan") return "";
-  if (kind === "onedrive") return "root";
-  if (kind === "googledrive") return "root";
-  if (kind === "webdav") return "/";
-  if (kind === "localstorage") return "/";
-  return "0";
+export function defaultRootId(_kind: Kind): string {
+  return "/";
 }
 
-export function usesRootDirectoryID(kind: Kind): boolean {
-  return kind !== "localstorage";
+export function usesRootDirectoryID(_kind: Kind): boolean {
+  return false;
 }
 
-export function rootIdPlaceholder(kind: Kind): string {
-  if (kind === "webdav") return "可填写目录路径，留空表示根目录";
-  return "可填写目录ID，留空表示根目录";
+export function rootIdPlaceholder(_kind: Kind): string {
+  return "";
 }
 
-export function rootDirectoryLabel(kind: Kind): string {
-  return kind === "webdav" ? "WebDAV根目录(可选)" : "自定义网盘根目录(可选)";
+export function rootDirectoryLabel(_kind: Kind): string {
+  return "";
 }
 
 export type CredentialField = {
@@ -194,214 +142,24 @@ export type CredentialField = {
   visibleWhen?: { key: string; value: string };
 };
 
-export function credentialFields(kind: Kind): CredentialField[] {
-  switch (kind) {
-    case "yun139":
-      return [
-        {
-          key: "authorization",
-          label: "Authorization",
-          placeholder: "登录 yun.139.com，在网络请求头中复制 Authorization（可包含 Basic 前缀）",
-          methodLabel: "或手动填写",
-          multiline: true,
-          required: true,
-        },
-      ];
-    case "quark":
-      return [
-        {
-          key: "cookie",
-          label: "Cookie",
-          placeholder: "__pus=...; __puus=...; ...",
-          methodLabel: "或手动填写",
-          multiline: true,
-          required: true,
-        },
-      ];
-    case "p115":
-      return [
-        {
-          key: "cookie",
-          label: "Cookie",
-          placeholder: "UID=xxx; CID=xxx; SEID=xxx; KID=xxx",
-          methodLabel: "或手动填写",
-          multiline: true,
-          required: true,
-        },
-      ];
-    case "p123":
-      return [
-        {
-          key: "username",
-          label: "手机号/邮箱",
-          placeholder: "手机号或邮箱",
-          methodLabel: "或使用账号密码",
-        },
-        {
-          key: "password",
-          label: "密码",
-          placeholder: "123网盘密码",
-        },
-      ];
-    case "pikpak":
-      return [
-        {
-          key: "username",
-          label: "邮箱",
-          placeholder: "user@example.com",
-          methodLabel: "账号密码登录",
-        },
-        {
-          key: "password",
-          label: "密码",
-          placeholder: "PikPak 密码",
-        },
-        {
-          key: "refresh_token",
-          label: "refresh_token",
-          placeholder: "邮箱密码登录不可用时填写",
-          methodLabel: "或使用刷新令牌",
-        },
-      ];
-    case "wopan":
-      return [
-        {
-          key: "access_token",
-          label: "access_token",
-          placeholder: "",
-          methodLabel: "或手动填写",
-          required: true,
-        },
-        {
-          key: "refresh_token",
-          label: "refresh_token",
-          placeholder: "",
-          required: true,
-        },
-      ];
-    case "guangyapan":
-      return [
-        {
-          key: "refresh_token",
-          label: "refresh_token",
-          placeholder: "推荐填写，服务端会自动刷新 access_token",
-          methodLabel: "或手动填写",
-          multiline: true,
-        },
-        {
-          key: "access_token",
-          label: "access_token",
-          placeholder: "Bearer eyJ... 或直接粘贴 token",
-          multiline: true,
-        },
-      ];
-    case "onedrive":
-      return [
-        {
-          key: "auth_mode",
-          label: "认证方式",
-          placeholder: "",
-          type: "select",
-          defaultValue: ONEDRIVE_AUTH_MODE_OPENLIST_API,
-          options: [
-            {
-              value: ONEDRIVE_AUTH_MODE_OPENLIST_API,
-              label: "OpenList API",
-            },
-            {
-              value: ONEDRIVE_AUTH_MODE_CUSTOM_APP,
-              label: "自建应用",
-            },
-          ],
-        },
-        {
-          key: "client_id",
-          label: "客户端 ID",
-          placeholder: "Microsoft Entra 应用程序（客户端）ID",
-          visibleWhen: {
-            key: "auth_mode",
-            value: ONEDRIVE_AUTH_MODE_CUSTOM_APP,
-          },
-        },
-        {
-          key: "client_secret",
-          label: "客户端密钥",
-          placeholder: "请填写客户端密钥值，不是密钥 ID",
-          visibleWhen: {
-            key: "auth_mode",
-            value: ONEDRIVE_AUTH_MODE_CUSTOM_APP,
-          },
-        },
-        {
-          key: "refresh_token",
-          label: "refresh_token",
-          placeholder: "与所用应用匹配的 OneDrive refresh_token",
-          multiline: true,
-          required: true,
-        },
-      ];
-    case "googledrive":
-      return [
-        {
-          key: "client_id",
-          label: "客户端 ID",
-          placeholder: "xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com",
-          required: true,
-        },
-        {
-          key: "client_secret",
-          label: "客户端密钥",
-          placeholder: "Google OAuth client secret",
-          required: true,
-        },
-        {
-          key: "refresh_token",
-          label: "refresh_token",
-          placeholder: "Google OAuth refresh_token",
-          multiline: true,
-          required: true,
-        },
-      ];
-    case "webdav":
-      return [
-        {
-          key: "base_url",
-          label: "WebDAV 地址",
-          placeholder: "https://openlist.example.com/dav",
-          required: true,
-        },
-        {
-          key: "username",
-          label: "用户名",
-          placeholder: "WebDAV 用户名",
-          required: true,
-        },
-        {
-          key: "password",
-          label: "密码",
-          placeholder: "WebDAV 密码",
-          required: true,
-        },
-      ];
-    case "localstorage":
-      return [
-        {
-          key: "path",
-          label: "本地目录路径",
-          placeholder: "/mnt/videos",
-          required: true,
-        },
-        {
-          key: "strm_allow_outside_root",
-          label: ".strm 允许指向目录外",
-          placeholder: "",
-          type: "select",
-          defaultValue: "false",
-          options: [
-            { value: "false", label: "关闭（默认，仅允许目录内路径）" },
-            { value: "true", label: "开启（允许任意本地路径）" },
-          ],
-        },
-      ];
-  }
+export function credentialFields(_kind: Kind): CredentialField[] {
+  return [
+    {
+      key: "path",
+      label: "本地目录路径",
+      placeholder: "/media（容器内路径，对应群晖资源文件夹）",
+      required: true,
+    },
+    {
+      key: "strm_allow_outside_root",
+      label: ".strm 允许指向目录外",
+      placeholder: "",
+      type: "select",
+      defaultValue: "false",
+      options: [
+        { value: "false", label: "关闭（默认，仅允许目录内路径）" },
+        { value: "true", label: "开启（允许任意本地路径）" },
+      ],
+    },
+  ];
 }

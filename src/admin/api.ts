@@ -536,7 +536,7 @@ export function createBackupReceiveToken() {
 
 export type AdminDrive = {
   id: string;
-  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "yun139" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+  kind: "localstorage";
   name: string;
   rootId: string;
   status: string;
@@ -659,7 +659,7 @@ export function subscribeDriveSnapshots(id: string, onSnapshot: (snapshot: Drive
 
 export type UpsertDriveInput = {
   id: string;
-  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "yun139" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+  kind: "localstorage";
   name: string;
   rootId: string;
   credentials: Record<string, string>;
@@ -905,162 +905,6 @@ export function deleteCrawler(id: string) {
   });
 }
 
-export type QuarkQRSession = {
-  token: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-  expiresAt: string;
-};
-
-export type QuarkQRStatus = {
-  state: "waiting" | "success" | "expired" | "error";
-  status: number;
-  statusText: string;
-  cookie?: string;
-};
-
-export function startQuarkQRLogin() {
-  return request<QuarkQRSession>("/drives/quark/qr", { method: "POST" });
-}
-
-export function getQuarkQRStatus(token: string) {
-  return request<QuarkQRStatus>("/drives/quark/qr/status", {
-    method: "POST",
-    body: JSON.stringify({ token }),
-  });
-}
-
-export type P115QRSession = {
-  uid: string;
-  time: number;
-  sign: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-};
-
-export type P115QRStatus = {
-  state: "waiting" | "scanned" | "success" | "expired" | "canceled" | "error";
-  status: number;
-  statusText: string;
-  cookie?: string;
-};
-
-export function startP115QRLogin(signal?: AbortSignal) {
-  return request<P115QRSession>("/drives/p115/qr", { method: "POST", signal });
-}
-
-export function getP115QRStatus(session: Pick<P115QRSession, "uid" | "time" | "sign">, signal?: AbortSignal) {
-  return request<P115QRStatus>("/drives/p115/qr/status", {
-    method: "POST",
-    signal,
-    body: JSON.stringify({
-      uid: session.uid,
-      time: session.time,
-      sign: session.sign,
-    }),
-  });
-}
-
-export type P123QRSession = {
-  loginUuid: string;
-  uniID: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-  expiresAt?: string;
-};
-
-export type P123QRStatus = {
-  loginStatus: number;
-  statusText: string;
-  scanPlatform?: number;
-  platformText?: string;
-  accessToken?: string;
-};
-
-export function startP123QRLogin() {
-  return request<P123QRSession>("/drives/p123/qr", { method: "POST" });
-}
-
-export function getP123QRStatus(uniID: string, loginUuid: string) {
-  const qs = new URLSearchParams({ loginUuid });
-  return request<P123QRStatus>(
-    `/drives/p123/qr/${encodeURIComponent(uniID)}?${qs.toString()}`
-  );
-}
-
-export type Yun139QRSession = {
-  sessionId: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-  expiresAt: string;
-};
-
-export type Yun139QRStatus = {
-  state: "waiting" | "scanned" | "success" | "expired" | "canceled" | "error";
-  statusText: string;
-  authorization?: string;
-};
-
-export function startYun139QRLogin(signal?: AbortSignal) {
-  return request<Yun139QRSession>("/drives/yun139/qr", { method: "POST", signal });
-}
-
-export function getYun139QRStatus(sessionId: string, signal?: AbortSignal) {
-  return request<Yun139QRStatus>("/drives/yun139/qr/status", {
-    method: "POST",
-    signal,
-    body: JSON.stringify({ sessionId }),
-  });
-}
-
-export type WopanQRSession = {
-  uuid: string;
-  qrImageDataUrl: string;
-  expiresAt?: string;
-};
-
-export type WopanQRStatus = {
-  state: number;
-  statusText: string;
-  accessToken?: string;
-  refreshToken?: string;
-  familyID?: string;
-};
-
-export function startWopanQRLogin() {
-  return request<WopanQRSession>("/drives/wopan/qr", { method: "POST" });
-}
-
-export function getWopanQRStatus(uuid: string) {
-  return request<WopanQRStatus>(`/drives/wopan/qr/${encodeURIComponent(uuid)}`);
-}
-
-export type GuangYaPanQRSession = {
-  deviceCode: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-  intervalSeconds: number;
-  expiresAt?: string;
-};
-
-export type GuangYaPanQRStatus = {
-  state: "pending" | "success" | "expired" | "denied" | "error";
-  statusText: string;
-  intervalSeconds?: number;
-  accessToken?: string;
-  refreshToken?: string;
-  tokenType?: string;
-  expiresIn?: number;
-};
-
-export function startGuangYaPanQRLogin() {
-  return request<GuangYaPanQRSession>("/drives/guangyapan/qr", { method: "POST" });
-}
-
-export function getGuangYaPanQRStatus(deviceCode: string) {
-  const qs = new URLSearchParams({ deviceCode });
-  return request<GuangYaPanQRStatus>(`/drives/guangyapan/qr/status?${qs.toString()}`);
-}
 
 
 /**

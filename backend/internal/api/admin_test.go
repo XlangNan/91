@@ -1036,7 +1036,7 @@ func TestHandleUpsertDriveMetadataOnlySaveDoesNotReloadRuntime(t *testing.T) {
 
 	if err := cat.UpsertDrive(ctx, &catalog.Drive{
 		ID:         "quark-main",
-		Kind:       "quark",
+		Kind:       "localstorage",
 		Name:       "Old name",
 		RootID:     "0",
 		ScanRootID: "0",
@@ -1051,7 +1051,7 @@ func TestHandleUpsertDriveMetadataOnlySaveDoesNotReloadRuntime(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
 		"id": "quark-main",
-		"kind": "quark",
+		"kind": "localstorage",
 		"name": "New name",
 		"rootId": "0",
 		"scanRootId": "scan-root",
@@ -1083,8 +1083,8 @@ func TestHandleUpsertDriveMetadataOnlySaveDoesNotReloadRuntime(t *testing.T) {
 	if got.Name != "New name" {
 		t.Fatalf("name = %q, want New name", got.Name)
 	}
-	if got.ScanRootID != "0" {
-		t.Fatalf("scanRootId = %q, want rootId 0", got.ScanRootID)
+	if got.ScanRootID != "/" {
+		t.Fatalf("scanRootId = %q, want rootId /", got.ScanRootID)
 	}
 	if got.Credentials["cookie"] != "existing-cookie" {
 		t.Fatalf("cookie credential = %q, want existing-cookie", got.Credentials["cookie"])
@@ -1162,7 +1162,7 @@ func TestHandleUpsertDriveClearsSkipDirsWhenExplicitlyRequested(t *testing.T) {
 
 	if err := cat.UpsertDrive(ctx, &catalog.Drive{
 		ID:         "quark-main",
-		Kind:       "quark",
+		Kind:       "localstorage",
 		Name:       "Quark",
 		RootID:     "0",
 		SkipDirIDs: []string{"remove-me"},
@@ -1175,7 +1175,7 @@ func TestHandleUpsertDriveClearsSkipDirsWhenExplicitlyRequested(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
 		"id": "quark-main",
-		"kind": "quark",
+		"kind": "localstorage",
 		"name": "Quark",
 		"rootId": "0",
 		"credentials": {},
@@ -1259,11 +1259,11 @@ func TestHandleUpsertDriveDefaultsEmptyRootID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
-		"id": "onedrive-main",
-		"kind": "onedrive",
-		"name": "OneDrive",
+		"id": "local-main",
+		"kind": "localstorage",
+		"name": "Local",
 		"rootId": "",
-		"credentials": {"refresh_token": "token"}
+		"credentials": {"path": "/volume1/video"}
 	}`))
 	rr := httptest.NewRecorder()
 
@@ -1272,12 +1272,12 @@ func TestHandleUpsertDriveDefaultsEmptyRootID(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
-	got, err := cat.GetDrive(ctx, "onedrive-main")
+	got, err := cat.GetDrive(ctx, "local-main")
 	if err != nil {
 		t.Fatalf("get drive: %v", err)
 	}
-	if got.RootID != "root" {
-		t.Fatalf("rootId = %q, want root", got.RootID)
+	if got.RootID != "/" {
+		t.Fatalf("rootId = %q, want /", got.RootID)
 	}
 	if got.ScanRootID != got.RootID {
 		t.Fatalf("scanRootId = %q, want rootId %q", got.ScanRootID, got.RootID)
@@ -1293,7 +1293,7 @@ func TestHandleUpsertDriveSavesBusyRuntimeAndDefersReload(t *testing.T) {
 	t.Cleanup(func() { _ = cat.Close() })
 	if err := cat.UpsertDrive(ctx, &catalog.Drive{
 		ID:          "quark-main",
-		Kind:        "quark",
+		Kind:        "localstorage",
 		Name:        "Quark",
 		RootID:      "0",
 		Credentials: map[string]string{"cookie": "old-cookie"},
@@ -1316,7 +1316,7 @@ func TestHandleUpsertDriveSavesBusyRuntimeAndDefersReload(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
 		"id":"quark-main",
-		"kind":"quark",
+		"kind":"localstorage",
 		"name":"Quark",
 		"rootId":"0",
 		"credentials":{"cookie":"new-cookie"}
@@ -1356,7 +1356,7 @@ func TestHandleUpsertDriveReplacesExistingCredentialsWhenProvided(t *testing.T) 
 
 	if err := cat.UpsertDrive(ctx, &catalog.Drive{
 		ID:         "quark-main",
-		Kind:       "quark",
+		Kind:       "localstorage",
 		Name:       "Old name",
 		RootID:     "0",
 		ScanRootID: "0",
@@ -1370,7 +1370,7 @@ func TestHandleUpsertDriveReplacesExistingCredentialsWhenProvided(t *testing.T) 
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
 		"id": "quark-main",
-		"kind": "quark",
+		"kind": "localstorage",
 		"name": "New name",
 		"rootId": "0",
 		"scanRootId": "0",
@@ -1400,347 +1400,6 @@ func TestHandleUpsertDriveReplacesExistingCredentialsWhenProvided(t *testing.T) 
 	}
 	if runtimeReloads != 1 {
 		t.Fatalf("runtime reloads = %d, want 1 for credential change", runtimeReloads)
-	}
-}
-
-func TestHandleUpsertPikPakPatchesCredentials(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() { _ = cat.Close() })
-
-	if err := cat.UpsertDrive(ctx, &catalog.Drive{
-		ID:     "pikpak-main",
-		Kind:   "pikpak",
-		Name:   "PikPak",
-		RootID: "",
-		Credentials: map[string]string{
-			"username":      "old-user",
-			"password":      "old-password",
-			"access_token":  "runtime-access",
-			"refresh_token": "runtime-refresh",
-			"captcha_token": "runtime-captcha",
-			"device_id":     "runtime-device",
-		},
-		Status: "ok",
-	}); err != nil {
-		t.Fatalf("seed drive: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
-		"id": "pikpak-main",
-		"kind": "pikpak",
-		"name": "Renamed PikPak",
-		"rootId": "",
-		"credentials": {"username": "new-user"}
-	}`))
-	rr := httptest.NewRecorder()
-
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	got, err := cat.GetDrive(ctx, "pikpak-main")
-	if err != nil {
-		t.Fatalf("get drive: %v", err)
-	}
-	if got.Name != "Renamed PikPak" || got.Credentials["username"] != "new-user" {
-		t.Fatalf("editable fields not updated: %+v", got)
-	}
-	for key, want := range map[string]string{
-		"password":      "old-password",
-		"access_token":  "runtime-access",
-		"refresh_token": "runtime-refresh",
-		"captcha_token": "runtime-captcha",
-		"device_id":     "runtime-device",
-	} {
-		if got.Credentials[key] != want {
-			t.Fatalf("credential %s = %q, want %q; all=%#v", key, got.Credentials[key], want, got.Credentials)
-		}
-	}
-}
-
-func TestHandleUpsertOneDrivePatchesRuntimeTokens(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() { _ = cat.Close() })
-
-	if err := cat.UpsertDrive(ctx, &catalog.Drive{
-		ID:     "onedrive-main",
-		Kind:   "onedrive",
-		Name:   "OneDrive",
-		RootID: "root",
-		Credentials: map[string]string{
-			"access_token":  "runtime-access",
-			"refresh_token": "runtime-refresh",
-			"region":        "global",
-		},
-	}); err != nil {
-		t.Fatalf("seed drive: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
-		"id": "onedrive-main",
-		"kind": "onedrive",
-		"name": "Renamed OneDrive",
-		"rootId": "root",
-		"credentials": {"region": "cn"}
-	}`))
-	rr := httptest.NewRecorder()
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	got, err := cat.GetDrive(ctx, "onedrive-main")
-	if err != nil {
-		t.Fatalf("get drive: %v", err)
-	}
-	if got.Name != "Renamed OneDrive" || got.Credentials["region"] != "cn" {
-		t.Fatalf("editable settings not updated: %+v", got)
-	}
-	if got.Credentials["access_token"] != "runtime-access" || got.Credentials["refresh_token"] != "runtime-refresh" {
-		t.Fatalf("runtime tokens were replaced: %#v", got.Credentials)
-	}
-}
-
-func TestHandleUpsertPikPakDoesNotInheritCredentialsFromAnotherKind(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() { _ = cat.Close() })
-
-	if err := cat.UpsertDrive(ctx, &catalog.Drive{
-		ID:     "drive-main",
-		Kind:   "quark",
-		Name:   "Quark",
-		RootID: "0",
-		Credentials: map[string]string{
-			"cookie": "old-quark-cookie",
-		},
-	}); err != nil {
-		t.Fatalf("seed drive: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
-		"id": "drive-main",
-		"kind": "pikpak",
-		"name": "PikPak",
-		"rootId": "",
-		"credentials": {"refresh_token": "pikpak-refresh"}
-	}`))
-	rr := httptest.NewRecorder()
-
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	got, err := cat.GetDrive(ctx, "drive-main")
-	if err != nil {
-		t.Fatalf("get drive: %v", err)
-	}
-	if got.Kind != "pikpak" || got.Credentials["refresh_token"] != "pikpak-refresh" {
-		t.Fatalf("pikpak fields not saved: %+v", got)
-	}
-	if _, ok := got.Credentials["cookie"]; ok {
-		t.Fatalf("credentials retained from prior drive kind: %#v", got.Credentials)
-	}
-}
-
-func TestHandleUpsertGoogleDriveMergesOAuthCredentials(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
-
-	if err := cat.UpsertDrive(ctx, &catalog.Drive{
-		ID:     "google-main",
-		Kind:   "googledrive",
-		Name:   "Google Drive",
-		RootID: "root",
-		Credentials: map[string]string{
-			"refresh_token":   "existing-refresh",
-			"access_token":    "existing-access",
-			"use_online_api":  "true",
-			"api_url_address": "https://api.oplist.org/googleui/renewapi",
-		},
-		Status: "ok",
-	}); err != nil {
-		t.Fatalf("seed drive: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
-		"id": "google-main",
-		"kind": "googledrive",
-		"name": "Google Drive",
-		"rootId": "root",
-		"credentials": {
-			"use_online_api": "false",
-			"client_id": "google-client-id",
-			"client_secret": "google-client-secret"
-		}
-	}`))
-	rr := httptest.NewRecorder()
-
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	got, err := cat.GetDrive(ctx, "google-main")
-	if err != nil {
-		t.Fatalf("get drive: %v", err)
-	}
-	if got.Credentials["refresh_token"] != "existing-refresh" || got.Credentials["access_token"] != "existing-access" {
-		t.Fatalf("tokens were not preserved: %#v", got.Credentials)
-	}
-	if got.Credentials["client_id"] != "google-client-id" || got.Credentials["client_secret"] != "google-client-secret" {
-		t.Fatalf("oauth client credentials = %#v, want saved", got.Credentials)
-	}
-	if _, ok := got.Credentials["use_online_api"]; ok {
-		t.Fatalf("deprecated use_online_api was not removed: %#v", got.Credentials)
-	}
-	if _, ok := got.Credentials["api_url_address"]; ok {
-		t.Fatalf("deprecated api_url_address was not removed: %#v", got.Credentials)
-	}
-}
-
-func TestHandleUpsertOneDriveCanClearCustomOAuthCredentials(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
-
-	if err := cat.UpsertDrive(ctx, &catalog.Drive{
-		ID:     "onedrive-main",
-		Kind:   "onedrive",
-		Name:   "OneDrive",
-		RootID: "root",
-		Credentials: map[string]string{
-			"refresh_token": "existing-refresh",
-			"access_token":  "existing-access",
-			"auth_mode":     "custom_app",
-			"client_id":     "custom-client-id",
-			"client_secret": "custom-client-secret",
-		},
-		Status: "ok",
-	}); err != nil {
-		t.Fatalf("seed drive: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
-		"id": "onedrive-main",
-		"kind": "onedrive",
-		"name": "OneDrive",
-		"rootId": "root",
-		"credentials": {
-			"auth_mode": "openlist_api",
-			"client_id": "",
-			"client_secret": ""
-		}
-	}`))
-	rr := httptest.NewRecorder()
-
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	got, err := cat.GetDrive(ctx, "onedrive-main")
-	if err != nil {
-		t.Fatalf("get drive: %v", err)
-	}
-	if got.Credentials["client_id"] != "" || got.Credentials["client_secret"] != "" {
-		t.Fatalf("custom oauth credentials were not cleared: %#v", got.Credentials)
-	}
-	if got.Credentials["auth_mode"] != "openlist_api" {
-		t.Fatalf("auth mode = %q, want openlist_api", got.Credentials["auth_mode"])
-	}
-	if got.Credentials["refresh_token"] != "existing-refresh" || got.Credentials["access_token"] != "existing-access" {
-		t.Fatalf("tokens were not preserved: %#v", got.Credentials)
-	}
-}
-
-func TestHandleUpsertWebDAVMergesCredentials(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
-
-	if err := cat.UpsertDrive(ctx, &catalog.Drive{
-		ID:     "webdav-main",
-		Kind:   "webdav",
-		Name:   "WebDAV",
-		RootID: "/media",
-		Credentials: map[string]string{
-			"base_url": "https://openlist.example.com/dav",
-			"username": "existing-user",
-			"password": "existing-password",
-		},
-		Status: "ok",
-	}); err != nil {
-		t.Fatalf("seed drive: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
-		"id": "webdav-main",
-		"kind": "webdav",
-		"name": "WebDAV",
-		"rootId": "/media",
-		"credentials": {
-			"base_url": "",
-			"username": "updated-user",
-			"password": ""
-		}
-	}`))
-	rr := httptest.NewRecorder()
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	got, err := cat.GetDrive(ctx, "webdav-main")
-	if err != nil {
-		t.Fatalf("get drive: %v", err)
-	}
-	if got.Credentials["base_url"] != "https://openlist.example.com/dav" {
-		t.Fatalf("base_url = %q, want preserved", got.Credentials["base_url"])
-	}
-	if got.Credentials["username"] != "updated-user" {
-		t.Fatalf("username = %q, want updated-user", got.Credentials["username"])
-	}
-	if got.Credentials["password"] != "existing-password" {
-		t.Fatalf("password = %q, want preserved", got.Credentials["password"])
-	}
-	if !isCrawlerUploadTargetKind(got.Kind) {
-		t.Fatalf("kind %q should be a crawler upload target", got.Kind)
 	}
 }
 
@@ -2937,117 +2596,6 @@ func TestHandleImportCrawlerScriptURLRejectsNonPython(t *testing.T) {
 	}
 }
 
-func TestHandleQuarkQRStartAndStatusReturnCookie(t *testing.T) {
-	var pollCalls int
-	var accountCalls int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/cas/ajax/getTokenForQrcodeLogin":
-			http.SetCookie(w, &http.Cookie{Name: "_UP_LOGIN", Value: "temporary", Path: "/", HttpOnly: true})
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": 2000000,
-				"data":   map[string]any{"members": map[string]string{"token": "quark-token"}},
-			})
-		case "/cas/ajax/getServiceTicketByQrcodeToken":
-			pollCalls++
-			if r.URL.Query().Get("token") != "quark-token" {
-				t.Errorf("poll token = %q", r.URL.Query().Get("token"))
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": 2000000,
-				"data":   map[string]any{"members": map[string]string{"service_ticket": "service-ticket"}},
-			})
-		case "/account/info":
-			accountCalls++
-			if r.URL.Query().Get("st") != "service-ticket" {
-				t.Errorf("service ticket = %q", r.URL.Query().Get("st"))
-			}
-			http.SetCookie(w, &http.Cookie{Name: "__pus", Value: "pus-value", Path: "/", HttpOnly: true})
-			http.SetCookie(w, &http.Cookie{Name: "__puus", Value: "puus-value", Path: "/", HttpOnly: true})
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "code": 0})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(upstream.Close)
-
-	server := &AdminServer{
-		QuarkQRUOPBaseURL: upstream.URL,
-		QuarkQRPanBaseURL: upstream.URL,
-	}
-	startReq := httptest.NewRequest(http.MethodPost, "/admin/api/drives/quark/qr", nil)
-	startRR := httptest.NewRecorder()
-	server.handleQuarkQRStart(startRR, startReq)
-	if startRR.Code != http.StatusOK {
-		t.Fatalf("start status = %d, body = %s", startRR.Code, startRR.Body.String())
-	}
-	if startRR.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("start Cache-Control = %q", startRR.Header().Get("Cache-Control"))
-	}
-	var session struct {
-		Token          string `json:"token"`
-		QRCodeURL      string `json:"qrCodeUrl"`
-		QRImageDataURL string `json:"qrImageDataUrl"`
-	}
-	if err := json.NewDecoder(startRR.Body).Decode(&session); err != nil {
-		t.Fatalf("decode start: %v", err)
-	}
-	if session.Token != "quark-token" || !strings.HasPrefix(session.QRCodeURL, "https://su.quark.cn/4_eMHBJ?") {
-		t.Fatalf("session = %#v", session)
-	}
-	if !strings.HasPrefix(session.QRImageDataURL, "data:image/png;base64,") {
-		t.Fatalf("qr image = %q", session.QRImageDataURL)
-	}
-
-	statusReq := httptest.NewRequest(
-		http.MethodPost,
-		"/admin/api/drives/quark/qr/status",
-		strings.NewReader(`{"token":"quark-token"}`),
-	)
-	if statusReq.URL.RawQuery != "" {
-		t.Fatalf("admin status request unexpectedly contains query: %s", statusReq.URL.RawQuery)
-	}
-	statusRR := httptest.NewRecorder()
-	server.handleQuarkQRStatus(statusRR, statusReq)
-	if statusRR.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", statusRR.Code, statusRR.Body.String())
-	}
-	if statusRR.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("status Cache-Control = %q", statusRR.Header().Get("Cache-Control"))
-	}
-	var status struct {
-		State  string `json:"state"`
-		Status int    `json:"status"`
-		Cookie string `json:"cookie"`
-	}
-	if err := json.NewDecoder(statusRR.Body).Decode(&status); err != nil {
-		t.Fatalf("decode status: %v", err)
-	}
-	if status.State != "success" || status.Status != 2000000 || status.Cookie != "__pus=pus-value; __puus=puus-value" {
-		t.Fatalf("status response = %#v", status)
-	}
-	if pollCalls != 1 || accountCalls != 1 {
-		t.Fatalf("upstream calls: poll=%d account=%d", pollCalls, accountCalls)
-	}
-}
-
-func TestHandleQuarkQRStatusRejectsMissingToken(t *testing.T) {
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"/admin/api/drives/quark/qr/status",
-		strings.NewReader(`{"token":""}`),
-	)
-	rr := httptest.NewRecorder()
-	(&AdminServer{}).handleQuarkQRStatus(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	if rr.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("Cache-Control = %q", rr.Header().Get("Cache-Control"))
-	}
-}
-
 type p115QRRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f p115QRRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -3061,296 +2609,6 @@ func p115QRJSONResponse(req *http.Request, body string) *http.Response {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Request:    req,
-	}
-}
-
-func TestHandleP115QRStart(t *testing.T) {
-	client := &http.Client{Transport: p115QRRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Host != "qrcodeapi.115.com" || req.URL.Path != "/api/1.0/web/1.0/token" {
-			t.Fatalf("unexpected upstream request: %s", req.URL.String())
-		}
-		return p115QRJSONResponse(req, `{
-			"state":1,
-			"code":0,
-			"data":{
-				"uid":"qr-uid",
-				"time":1784127027,
-				"sign":"qr-sign",
-				"qrcode":"https://115.com/scan/dg-qr-uid"
-			}
-		}`), nil
-	})}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives/p115/qr", nil)
-	rr := httptest.NewRecorder()
-	(&AdminServer{P115QRHTTPClient: client}).handleP115QRStart(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	if rr.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("Cache-Control = %q", rr.Header().Get("Cache-Control"))
-	}
-	var got struct {
-		UID            string `json:"uid"`
-		Time           int64  `json:"time"`
-		Sign           string `json:"sign"`
-		QRCodeURL      string `json:"qrCodeUrl"`
-		QRImageDataURL string `json:"qrImageDataUrl"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.UID != "qr-uid" || got.Time != 1784127027 || got.Sign != "qr-sign" || got.QRCodeURL != "https://115.com/scan/dg-qr-uid" {
-		t.Fatalf("response = %#v", got)
-	}
-	if !strings.HasPrefix(got.QRImageDataURL, "data:image/png;base64,") {
-		t.Fatalf("qr image = %q", got.QRImageDataURL)
-	}
-}
-
-func TestHandleP115QRStatusUsesPOSTBodyAndReturnsCookie(t *testing.T) {
-	upstreamCalls := 0
-	client := &http.Client{Transport: p115QRRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		upstreamCalls++
-		switch req.URL.Host + req.URL.Path {
-		case "qrcodeapi.115.com/get/status/":
-			if req.URL.Query().Get("uid") != "qr-uid" || req.URL.Query().Get("sign") != "qr-sign" {
-				t.Fatalf("status query = %s", req.URL.RawQuery)
-			}
-			return p115QRJSONResponse(req, `{"state":1,"code":0,"data":{"status":2}}`), nil
-		case "passportapi.115.com/app/1.0/web/1.0/login/qrcode":
-			return p115QRJSONResponse(req, `{
-				"state":1,
-				"code":0,
-				"data":{"cookie":{"UID":"user-uid","CID":"cid","SEID":"seid","KID":"kid"}}
-			}`), nil
-		default:
-			t.Fatalf("unexpected upstream request: %s", req.URL.String())
-			return nil, nil
-		}
-	})}
-
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"/admin/api/drives/p115/qr/status",
-		strings.NewReader(`{"uid":"qr-uid","time":1784127027,"sign":"qr-sign"}`),
-	)
-	if req.URL.RawQuery != "" {
-		t.Fatalf("admin status request unexpectedly contains query: %s", req.URL.RawQuery)
-	}
-	rr := httptest.NewRecorder()
-	(&AdminServer{P115QRHTTPClient: client}).handleP115QRStatus(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	if rr.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("Cache-Control = %q", rr.Header().Get("Cache-Control"))
-	}
-	var got struct {
-		State  string `json:"state"`
-		Status int    `json:"status"`
-		Cookie string `json:"cookie"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.State != "success" || got.Status != 2 || got.Cookie != "UID=user-uid;CID=cid;SEID=seid;KID=kid" {
-		t.Fatalf("response = %#v", got)
-	}
-	if upstreamCalls != 2 {
-		t.Fatalf("upstream calls = %d, want 2", upstreamCalls)
-	}
-}
-
-func TestHandleP115QRStatusRejectsIncompleteSession(t *testing.T) {
-	upstreamCalls := 0
-	client := &http.Client{Transport: p115QRRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		upstreamCalls++
-		return p115QRJSONResponse(req, `{}`), nil
-	})}
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"/admin/api/drives/p115/qr/status",
-		strings.NewReader(`{"uid":"qr-uid","time":1784127027}`),
-	)
-	rr := httptest.NewRecorder()
-	(&AdminServer{P115QRHTTPClient: client}).handleP115QRStatus(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	if upstreamCalls != 0 {
-		t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
-	}
-}
-
-func TestHandleWopanQRStart(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path != "/QRCode/generate" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"meta": map[string]string{"code": "0000", "message": "ok"},
-			"result": map[string]string{
-				"uuid":  "uuid-1",
-				"image": "iVBORw0KGgo=",
-			},
-		})
-	}))
-	t.Cleanup(upstream.Close)
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives/wopan/qr", nil)
-	rr := httptest.NewRecorder()
-	(&AdminServer{WopanQRAPIBaseURL: upstream.URL + "/QRCode"}).handleWopanQRStart(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	var got struct {
-		UUID           string `json:"uuid"`
-		QRImageDataURL string `json:"qrImageDataUrl"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.UUID != "uuid-1" || got.QRImageDataURL != "data:image/png;base64,iVBORw0KGgo=" {
-		t.Fatalf("response = %#v", got)
-	}
-}
-
-func TestHandleWopanQRStatus(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path != "/QRCode/query" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.URL.Query().Get("uuid") != "uuid-1" {
-			t.Fatalf("uuid = %q, want uuid-1", r.URL.Query().Get("uuid"))
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"meta": map[string]string{"code": "0000", "message": "ok"},
-			"result": map[string]any{
-				"state":        3,
-				"token":        "access-1",
-				"refreshToken": "refresh-1",
-			},
-		})
-	}))
-	t.Cleanup(upstream.Close)
-
-	req := httptest.NewRequest(http.MethodGet, "/admin/api/drives/wopan/qr/uuid-1", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("uuid", "uuid-1")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rr := httptest.NewRecorder()
-	(&AdminServer{WopanQRAPIBaseURL: upstream.URL + "/QRCode"}).handleWopanQRStatus(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	var got struct {
-		State        int    `json:"state"`
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.State != 3 || got.AccessToken != "access-1" || got.RefreshToken != "refresh-1" {
-		t.Fatalf("response = %#v", got)
-	}
-}
-
-func TestHandleGuangYaPanQRStart(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path != "/v1/auth/device/code" {
-			http.NotFound(w, r)
-			return
-		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if body["scope"] != "user" {
-			t.Fatalf("scope = %#v, want user", body["scope"])
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"device_code":               "device-1",
-			"verification_uri_complete": "https://account.guangyapan.example/device?code=abc",
-			"interval":                  5,
-			"expires_in":                300,
-		})
-	}))
-	t.Cleanup(upstream.Close)
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives/guangyapan/qr", nil)
-	rr := httptest.NewRecorder()
-	(&AdminServer{GuangYaPanAccountBaseURL: upstream.URL}).handleGuangYaPanQRStart(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	var got struct {
-		DeviceCode     string `json:"deviceCode"`
-		QRCodeURL      string `json:"qrCodeUrl"`
-		QRImageDataURL string `json:"qrImageDataUrl"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.DeviceCode != "device-1" || got.QRCodeURL != "https://account.guangyapan.example/device?code=abc" {
-		t.Fatalf("response = %#v", got)
-	}
-	if !strings.HasPrefix(got.QRImageDataURL, "data:image/png;base64,") {
-		t.Fatalf("qr image = %q", got.QRImageDataURL)
-	}
-}
-
-func TestHandleGuangYaPanQRStatus(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path != "/v1/auth/token" {
-			http.NotFound(w, r)
-			return
-		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if body["device_code"] != "device-1" {
-			t.Fatalf("device_code = %#v, want device-1", body["device_code"])
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token":  "access-1",
-			"refresh_token": "refresh-1",
-			"token_type":    "Bearer",
-		})
-	}))
-	t.Cleanup(upstream.Close)
-
-	req := httptest.NewRequest(http.MethodGet, "/admin/api/drives/guangyapan/qr/status?deviceCode=device-1", nil)
-	rr := httptest.NewRecorder()
-	(&AdminServer{GuangYaPanAccountBaseURL: upstream.URL}).handleGuangYaPanQRStatus(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	var got struct {
-		State        string `json:"state"`
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.State != "success" || got.AccessToken != "access-1" || got.RefreshToken != "refresh-1" {
-		t.Fatalf("response = %#v", got)
 	}
 }
 

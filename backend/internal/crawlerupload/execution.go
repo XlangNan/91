@@ -14,7 +14,6 @@ import (
 	"github.com/video-site/backend/internal/applog"
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/pikpak"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
 	"github.com/video-site/backend/internal/persistence"
 	"github.com/video-site/backend/internal/readretry"
@@ -250,10 +249,6 @@ func (m *Migrator) migrateCandidates(ctx context.Context, plan migrationPlan, be
 			if err != nil {
 				recordUploadIssue(itemCtx, result, v, uploadjob.Issue{Stage: "upload", Reason: "upload_failed", Message: err.Error()}, false)
 				if _, limited := drives.RateLimitRetryAfter(err); limited {
-					return err
-				}
-				if pikpak.IsCaptchaError(err) {
-					m.setCooldown(plan.targetDriveID, m.cfg.CaptchaCooldown)
 					return err
 				}
 				if targetUploadRejected(err) {

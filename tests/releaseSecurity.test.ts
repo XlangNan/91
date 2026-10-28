@@ -55,7 +55,7 @@ test("container and release builds use supported Node and run checks", () => {
   assert.match(packageJson.packageManager ?? "", /^npm@\d+\.\d+\.\d+$/);
   assert.equal(packageJson.engines?.npm, `^${packageJson.packageManager!.slice(4)}`);
   const frontendStage = dockerfile.match(/^FROM(?:\s+--platform=\S+)?\s+(\S+)\s+AS\s+frontend\s*$/im);
-  assert.equal(frontendStage?.[1], `node:${nodeVersion}-slim`, "Frontend image must use the pinned Node version");
+  assert.equal(frontendStage?.[1], `${"$"}{DOCKER_MIRROR}node:${nodeVersion}-slim`, "Frontend image must use the pinned Node version");
   assert.match(dockerfile, /^COPY package\.json package-lock\.json \.npmrc \.\/$/m);
   assert.match(dockerWorkflow, /node-version-file: \.nvmrc/);
   assert.match(releaseWorkflow, /node-version-file: \.nvmrc/);

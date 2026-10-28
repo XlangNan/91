@@ -172,53 +172,6 @@ func TestStaleDriveCredentialLeaseCannotOverwriteRemountedTokens(t *testing.T) {
 	}
 }
 
-func TestDriveCredentialLeaseRejectsCallbackAfterAdminTokenReplacement(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() { _ = cat.Close() })
-
-	if err := cat.UpsertDrive(ctx, &catalog.Drive{
-		ID:     "onedrive-main",
-		Kind:   "onedrive",
-		Name:   "OneDrive",
-		RootID: "root",
-		Credentials: map[string]string{
-			"access_token":  "old-access",
-			"refresh_token": "old-refresh",
-		},
-	}); err != nil {
-		t.Fatalf("seed drive: %v", err)
-	}
-	app := &App{cat: cat}
-	lease := app.beginDriveCredentialLease("onedrive-main")
-	drive, err := cat.GetDrive(ctx, "onedrive-main")
-	if err != nil {
-		t.Fatalf("get drive for lease: %v", err)
-	}
-	configureDriveCredentialLease(lease, drive)
-
-	if err := cat.PatchDriveCredentials(ctx, "onedrive-main", map[string]string{
-		"refresh_token": "administrator-refresh",
-	}); err != nil {
-		t.Fatalf("replace token as administrator: %v", err)
-	}
-	app.persistDriveCredentials(lease, map[string]string{
-		"access_token":  "late-runtime-access",
-		"refresh_token": "late-runtime-refresh",
-	})
-
-	got, err := cat.GetDrive(ctx, "onedrive-main")
-	if err != nil {
-		t.Fatalf("get drive: %v", err)
-	}
-	if got.Credentials["access_token"] != "old-access" || got.Credentials["refresh_token"] != "administrator-refresh" {
-		t.Fatalf("credentials = %#v, late callback overwrote administrator token", got.Credentials)
-	}
-}
-
 func TestListDriveDirChildrenPersistsFailureAndRecovery(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
@@ -1366,16 +1319,6 @@ func TestDriveGenerationStatusIncludesQueuedCrawlerUploadBeforeProgress(t *testi
 	status := app.driveGenerationStatuses()["crawler-id"].Upload
 	if status.State != "queued" {
 		t.Fatalf("upload status = %#v, want queued", status)
-	}
-}
-
-func TestGuangYaPanGenerationCooldowns(t *testing.T) {
-	drv := &serverFakeKindDrive{id: "gy", kind: "guangyapan"}
-	if got := generationCooldownForDrive(drv); got != 10*time.Minute {
-		t.Fatalf("generation cooldown = %s, want 10m", got)
-	}
-	if got := fingerprintConfigForDrive(drv).RateLimitCooldown; got != 10*time.Minute {
-		t.Fatalf("fingerprint cooldown = %s, want 10m", got)
 	}
 }
 

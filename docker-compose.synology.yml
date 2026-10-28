@@ -1,0 +1,31 @@
+# 群晖部署：在 NAS 上直接构建镜像，并把资源文件夹挂载进容器。
+#
+# 使用前只改两处：
+#   1. 把 /volume1/video 改成你的资源文件夹（保留 :ro 只读，网站不会改动你的文件）
+#   2. 如需换端口，改 "9191:9191" 左边的数字
+#
+# 启动：  sudo docker compose -f docker-compose.synology.yml up -d --build
+# 日志：  sudo docker compose -f docker-compose.synology.yml logs -f
+# 改密码：sudo docker exec -it video-site-91 ./server reset-password
+services:
+  video-site-91:
+    build:
+      context: .
+      args:
+        # 国内镜像：基础镜像 / apt / npm。要用官方源就把三项都清空，见 Dockerfile 开头注释
+        DOCKER_MIRROR: docker.m.daocloud.io/library/
+        APT_MIRROR: mirrors.ustc.edu.cn
+        NPM_REGISTRY: https://registry.npmmirror.com
+    image: video-site-91:local
+    container_name: video-site-91
+    ports:
+      - "9191:9191"
+    environment:
+      TZ: Asia/Shanghai
+      VIDEO_RESTART_MANAGED: "true"
+    volumes:
+      # 数据库、封面、预览、配置都在这里
+      - ./data:/opt/video-site-91/data
+      # 资源文件夹：后台「存储」里添加“本地存储”，路径填 /media 即可
+      - /volume1/video:/media:ro
+    restart: unless-stopped
